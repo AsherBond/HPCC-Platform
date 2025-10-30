@@ -37,6 +37,8 @@
 #include "jsecrets.hpp"
 #include "jutil.hpp"
 #include "junicode.hpp"
+#include "jstream.hpp"
+#include "jcrc.hpp"
 
 #include "thorread.hpp"
 #include "thorwrite.hpp"
@@ -471,7 +473,6 @@ CPPUNIT_TEST_SUITE_REGISTRATION( JlibStreamTest );
 CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( JlibStreamTest, "JlibStreamTest" );
 
 
-
 class JlibFileStressTest : public CppUnit::TestFixture
 {
 public:
@@ -596,5 +597,354 @@ public:
 
 CPPUNIT_TEST_SUITE_REGISTRATION( JlibFileStressTest );
 CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( JlibFileStressTest, "JlibFileStressTest" );
+
+
+// Fill a block with deterministic content that achieves a realistic compression ratio (~50%).
+// Even bytes are pseudo-random (high entropy), odd bytes are zero (easily compressed).
+// This gives compressors enough redundancy to achieve roughly 2:1 compression.
+static void fillBlockSemiCompressible(byte * block, size32_t len, offset_t blockOffset)
+{
+    uint32_t state = static_cast<uint32_t>(blockOffset ^ (blockOffset >> 32)) ^ 0x5A5A5A5A;
+    if (state == 0) state = 1;
+    for (size32_t i = 0; i < len; i++)
+    {
+        if (i & 1)
+        {
+            block[i] = 0;
+        }
+        else
+        {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            block[i] = static_cast<byte>(state);
+        }
+    }
+}
+
+// Read an entire IBufferedSerialInputStream, accumulate CRC32, return elapsed nanoseconds.
+static __uint64 readStreamWithCrc(IBufferedSerialInputStream * in, size32_t readSize, unsigned & readCrc, offset_t limit = UnknownOffset)
+{
+    MemoryAttr bufMem(readSize);
+    byte * buf = static_cast<byte *>(bufMem.bufferBase());
+    CRC32 crc;
+    CCycleTimer timer;
+    offset_t totalRead = 0;
+    for (;;)
+    {
+        size32_t toRead = readSize;
+        if (limit != UnknownOffset && (limit - totalRead) < readSize)
+            toRead = (size32_t)(limit - totalRead);
+        if (toRead == 0)
+            break;
+        size32_t got = in->read(toRead, buf);
+        if (got == 0)
+            break;
+        crc.tally(got, buf);
+        totalRead += got;
+    }
+    __uint64 ns = timer.elapsedNs();
+    readCrc = crc.get();
+    return ns;
+}
+
+// Write a test file using the serial-stream compression pipeline (matching how Thor writes data).
+// Returns the CRC32 of the *uncompressed* content so readers can verify decompression integrity.
+//
+// Pipeline: IFileIO -> createSerialOutputStream -> createBufferedOutputStream
+//           -> createCompressingOutputStream -> createBufferedOutputStream (outer, decompressed-block-sized)
+//
+// The content is semi-compressible (~50% ratio) so the compressed file is roughly
+// half the uncompressed size -- targeting a compressed file just over 4 GB on disk.
+static unsigned createCompressedTestFile(const char * filename, offset_t uncompressedSize, const char * compression, size32_t ioBufferSize, bool overwrite = false)
+{
+    Owned<IFile> file = createIFile(filename);
+    if (file->exists() && !overwrite)
+    {
+        DBGLOG("File %s already exists - will not create. size=%" I64F "d", filename, file->size());
+        // read to calculate CRC of existing file content using crc streamer
+        Owned<IFileIO> io = file->open(IFOread);
+        Owned<ISerialInputStream> rawStream = createSerialInputStream(io);
+        Owned<IBufferedSerialInputStream> ioBuffer = createBufferedInputStream(rawStream, ioBufferSize);
+        Owned<IExpander> expander = getExpander(compression);
+        Owned<ISerialInputStream> decompressed = createDecompressingInputStream(ioBuffer, expander);
+        Owned<IBufferedSerialInputStream> in = createBufferedInputStream(decompressed, ioBufferSize);
+        unsigned crc;
+        readStreamWithCrc(in, ioBufferSize, crc, UnknownOffset);
+        return crc;
+    }
+    DBGLOG("Creating %.2f GB test file (compression=%s)...",
+        (double)uncompressedSize / 0x40000000, compression);
+    Owned<IFileIO> io = file->open(IFOcreate);
+    Owned<ISerialOutputStream> rawStream = createSerialOutputStream(io);
+    Owned<IBufferedSerialOutputStream> ioBuffer = createBufferedOutputStream(rawStream, ioBufferSize);
+    Owned<ICompressor> compressor = getCompressor(compression);
+    Owned<ISerialOutputStream> compStream = createCompressingOutputStream(ioBuffer, compressor);
+    Owned<ISerialOutputStream> progStream = createProgressStream(compStream, 0, uncompressedSize, "Creating compress file", 1);
+    // Outer buffer collects uncompressed rows before handing blocks to the compressor
+    Owned<IBufferedSerialOutputStream> out = createBufferedOutputStream(progStream, ioBufferSize);
+
+    constexpr size32_t blockSize = 0x100000;  // 1 MB write blocks
+    MemoryAttr blockMem(blockSize);
+    byte * block = static_cast<byte *>(blockMem.bufferBase());
+    CRC32 fileCrc;
+    offset_t offset = 0;
+    while (offset < uncompressedSize)
+    {
+        size32_t toWrite = static_cast<size32_t>(std::min<offset_t>(blockSize, uncompressedSize - offset));
+        fillBlockSemiCompressible(block, toWrite, offset);
+        fileCrc.tally(toWrite, block);
+        out->put(toWrite, block);
+        offset += toWrite;
+    }
+    out->flush();
+    out.clear();
+    progStream.clear();
+    compStream.clear();
+    compressor.clear();
+    ioBuffer.clear();
+    rawStream.clear();
+
+    double ratio = (double)io->size() / uncompressedSize * 100;
+    DBGLOG("File created: compressed=%.1f MB  ratio=%.1f%%",
+        (double)io->size() / 0x100000, ratio);
+
+    return fileCrc.get();
+}
+
+// "Timing" in the suite name ensures the test is excluded from default unittest runs.
+//
+// Target scenario: reading multi-GB compressed files from Azure Blob storage where
+// 4 MB block size and 16-32 reader threads is the optimal configuration.
+//
+// Command-line options (all optional):
+//   --JlibParallelReadAheadTimingTest.filename=<path>     Use an existing file instead of creating one
+//   --JlibParallelReadAheadTimingTest.compression=<type>  Compression codec (default: zstd)
+//   --JlibParallelReadAheadTimingTest.size=<MB>           Uncompressed size in MB (default: ~8192)
+//   --JlibParallelReadAheadTimingTest.mode=[raw,decompressed,both]
+class JlibParallelReadAheadTimingTest : public CppUnit::TestFixture
+{
+public:
+    CPPUNIT_TEST_SUITE(JlibParallelReadAheadTimingTest);
+        CPPUNIT_TEST(testParallelReadAheadTiming);
+    CPPUNIT_TEST_SUITE_END();
+public:
+
+    // ~8 GB uncompressed; with ~50% compression ratio the on-disk file is just over 4 GB.
+    static constexpr offset_t defaultUncompressedSize = (offset_t)8 * 0x40000000 + 0x180000;
+    static constexpr size32_t defaultChunkSize = 0x400000;  // 4 MB -- Azure Blob optimal block size
+    static constexpr size32_t compressBlockSize = 0x10000;   // 64K -- compressed block size for test file creation
+    static constexpr size32_t readSize = 0x100000;   // 1 MB consumer read size
+    static constexpr size32_t overflowMaxSize = 0x400000;  // 4 MB overflow region
+    static constexpr const char * defaultFilename = "parallelReadAheadTimingTest.tmp";
+    static constexpr const char * defaultCompression = "zstd";
+
+    void testParallelReadAheadTiming()
+    {
+        try
+        {
+            installDefaultFileHooks(nullptr);
+
+            Owned<IPropertyTree> config = getComponentConfigSP();
+
+            StringBuffer configuredFilename;
+            config->getProp("JlibParallelReadAheadTimingTest/@filename", configuredFilename);
+
+            StringBuffer compressionType;
+            config->getProp("JlibParallelReadAheadTimingTest/@compression", compressionType);
+            if (!compressionType.length())
+                compressionType.set(defaultCompression);
+
+            bool doRaw = true;
+            bool doDecompressed = true;
+            StringBuffer modeType;
+            config->getProp("JlibParallelReadAheadTimingTest/@mode", modeType);
+            if (modeType.length())
+            {
+                doRaw = strieq(modeType.str(), "raw") || strieq(modeType.str(), "both");
+                doDecompressed = strieq(modeType.str(), "decompressed") || strieq(modeType.str(), "both");
+            }
+
+            offset_t uncompressedSize = defaultUncompressedSize;
+            unsigned sizeMB = config->getPropInt("JlibParallelReadAheadTimingTest/@size", 0);
+            if (sizeMB)
+                uncompressedSize = (offset_t)sizeMB * 0x100000;
+
+            // If the uncompressed size is smaller than the default chunk size, reduce it
+            size32_t chunkSize = defaultChunkSize;
+            if (uncompressedSize < chunkSize)
+                chunkSize = (size32_t)uncompressedSize;
+
+            if (configuredFilename.length())
+            {
+                filename.set(configuredFilename);
+                DBGLOG("Using configured filename: %s  compression=%s", filename.get(), compressionType.str());
+            }
+            else
+                filename.set(defaultFilename);
+
+            bool overwrite = config->getPropBool("JlibParallelReadAheadTimingTest/@overwrite", false);
+            unsigned expectedCrc = createCompressedTestFile(filename, uncompressedSize, compressionType, compressBlockSize, overwrite);
+
+            Owned<IExpander> expander = getExpander(compressionType);
+
+            // --- Serial baseline: single-threaded sequential read with decompression ---
+            unsigned serialCrc = 0;
+            unsigned serialHalfCrc = 0;
+            unsigned serialRawCrc = 0;
+            unsigned serialHalfRawCrc = 0;
+            offset_t halfReadLimit = uncompressedSize / 2;
+            __uint64 serialNs = 0;
+            __uint64 serialRawNs = 0;
+
+            Owned<IFile> file = createIFile(filename);
+            offset_t fileLen = file->size();
+
+            {
+                Owned<IFileIO> io = file->open(IFOread);
+                Owned<ISerialInputStream> raw = createSerialInputStream(io);
+                Owned<ICrcSerialInputStream> rawCrc = createCrcInputStream(raw);
+                Owned<IBufferedSerialInputStream> ioStream = createBufferedInputStream(rawCrc, chunkSize);
+
+                if (doRaw)
+                {
+                    readStreamWithCrc(ioStream, readSize, serialHalfRawCrc, fileLen / 2);
+                    ioStream->reset(0, fileLen);
+                    serialRawNs = readStreamWithCrc(ioStream, readSize, serialRawCrc);
+                    logResult("Serial (Raw)", fileLen, serialRawNs, serialRawNs);
+                }
+
+                if (doDecompressed)
+                {
+                    if (doRaw)
+                        ioStream->reset(0, fileLen);
+
+                    Owned<ISerialInputStream> decompressed = createDecompressingInputStream(ioStream, expander);
+                    Owned<IBufferedSerialInputStream> in = createBufferedInputStream(decompressed, chunkSize);
+
+                    readStreamWithCrc(in, readSize, serialHalfCrc, halfReadLimit);
+                    in->reset(0, fileLen);
+                    serialNs = readStreamWithCrc(in, readSize, serialCrc);
+                    serialRawCrc = rawCrc->queryCrc();
+
+                    CPPUNIT_ASSERT_EQUAL_MESSAGE("Serial CRC mismatch", expectedCrc, serialCrc);
+                    logResult("Serial (Decompress)", uncompressedSize, serialNs, serialNs);
+                }
+            }
+
+            // --- Test Parallel Reset ---
+            {
+                Owned<IFile> pFile = createIFile(filename);
+                Owned<IFileIO> pIo = pFile->open(IFOread);
+                Owned<IBufferedSerialInputStream> pReadAhead = createParallelReadAheadInputStream(pIo, 4, chunkSize, overflowMaxSize);
+
+                if (doRaw)
+                {
+                    unsigned parallelHalfRawCrc = 0;
+                    unsigned parallelRawCrc = 0;
+
+                    readStreamWithCrc(pReadAhead, readSize, parallelHalfRawCrc, fileLen / 2);
+                    CPPUNIT_ASSERT_EQUAL_MESSAGE("Parallel Raw Half CRC mismatch", serialHalfRawCrc, parallelHalfRawCrc);
+
+                    pReadAhead->reset(0, fileLen);
+                    readStreamWithCrc(pReadAhead, readSize, parallelRawCrc);
+                    CPPUNIT_ASSERT_EQUAL_MESSAGE("Parallel Raw CRC mismatch", serialRawCrc, parallelRawCrc);
+                }
+
+                if (doDecompressed)
+                {
+                    if (doRaw)
+                        pReadAhead->reset(0, fileLen);
+                    unsigned parallelHalfCrc = 0;
+                    unsigned parallelCrc = 0;
+                    Owned<ISerialInputStream> pDecompressed = createDecompressingInputStream(pReadAhead, expander);
+                    Owned<IBufferedSerialInputStream> pIn = createBufferedInputStream(pDecompressed, chunkSize);
+
+                    readStreamWithCrc(pIn, readSize, parallelHalfCrc, halfReadLimit);
+                    CPPUNIT_ASSERT_EQUAL_MESSAGE("Parallel Half CRC mismatch", serialHalfCrc, parallelHalfCrc);
+
+                    pIn->reset(0, fileLen);
+                    readStreamWithCrc(pIn, readSize, parallelCrc);
+                    CPPUNIT_ASSERT_EQUAL_MESSAGE("Parallel CRC mismatch", serialCrc, parallelCrc);
+                }
+            }
+
+            // --- Sweep: concurrency x chunk size x consumer read size ---
+            DBGLOG("--- Sweep: threads x chunkSize x readSize ---");
+            DBGLOG("%-24s | %10s | %10s | %10s", "Label", "Time (us)", "Speed (MB/s)", "Speedup");
+            DBGLOG("-------------------------+------------+------------+-----------");
+            static constexpr unsigned sweepThreads[] = { 4, 8, 16, 32 };
+            static constexpr size32_t sweepChunkSizes[] = { 0x100000, 0x400000 };   // 1M, 4M
+            static constexpr size32_t sweepReadSizes[] = { 0x10000, 0x100000, 0x400000 };    //  64K, 1M, 4M
+
+            for (size32_t testChunkSize : sweepChunkSizes)
+            {
+                for (unsigned numThreads : sweepThreads)
+                {
+                    for (size32_t testReadSize : sweepReadSizes)
+                    {
+                        {
+                            size32_t currentOverflowMaxSize = std::min<size32_t>(overflowMaxSize, (numThreads - 1) * testChunkSize);
+                            Owned<IFile> file = createIFile(filename);
+                            Owned<IFileIO> io = file->open(IFOread);
+                            Owned<IBufferedSerialInputStream> readAhead = createParallelReadAheadInputStream(io, numThreads, testChunkSize, currentOverflowMaxSize);
+
+                            if (doRaw)
+                            {
+                                // Measure pure read-ahead performance first
+                                unsigned parallelRawCrcIter = 0;
+                                __uint64 parallelRawNsIter = readStreamWithCrc(readAhead, testReadSize, parallelRawCrcIter);
+                                CPPUNIT_ASSERT_EQUAL_MESSAGE("Sweep parallel raw data CRC mismatch", serialRawCrc, parallelRawCrcIter);
+
+                                VStringBuffer labelRaw("t=%u c=%uK r=%uK (Raw)", numThreads, testChunkSize / 1024, testReadSize / 1024);
+                                logResult(labelRaw.str(), fileLen, parallelRawNsIter, serialRawNs);
+                            }
+
+                            if (doDecompressed)
+                            {
+                                if (doRaw)
+                                    readAhead->reset(0, fileLen);
+                                Owned<ISerialInputStream> decompressed = createDecompressingInputStream(readAhead, expander);
+                                Owned<IBufferedSerialInputStream> in = createBufferedInputStream(decompressed, testReadSize);
+
+                                unsigned parallelCrc = 0;
+                                __uint64 parallelNs = readStreamWithCrc(in, testReadSize, parallelCrc);
+                                CPPUNIT_ASSERT(in->eos());
+
+                                VStringBuffer crcMsg("Sweep t=%u chunk=%uK read=%uK CRC mismatch",
+                                                    numThreads, testChunkSize / 1024, testReadSize / 1024);
+                                CPPUNIT_ASSERT_EQUAL_MESSAGE(crcMsg.str(), serialCrc, parallelCrc);
+
+                                VStringBuffer label("t=%u c=%uK r=%uK (Decompress)", numThreads, testChunkSize / 1024, testReadSize / 1024);
+                                logResult(label.str(), uncompressedSize, parallelNs, serialNs);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        catch (IException *e)
+        {
+            StringBuffer msg("Unexpected exception in testParallelReadAheadTiming: ");
+            e->errorMessage(msg);
+            EXCLOG(e);
+            e->Release();
+            CPPUNIT_FAIL(msg.str());
+        }
+    }
+
+private:
+    void logResult(const char * label, offset_t dataSize, __uint64 elapsedNs, __uint64 serialNs)
+    {
+        double mbs = (double)dataSize / elapsedNs * 1000;
+        double speedup = (double)serialNs / elapsedNs;
+        DBGLOG("%-24s | %10llu | %10.1f | %9.2fx", label, elapsedNs / 1000, mbs, speedup);
+    }
+
+    StringAttr filename;
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION(JlibParallelReadAheadTimingTest);
+CPPUNIT_TEST_SUITE_NAMED_REGISTRATION(JlibParallelReadAheadTimingTest, "JlibParallelReadAheadTimingTest");
 
 #endif
