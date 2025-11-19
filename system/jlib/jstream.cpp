@@ -543,8 +543,9 @@ extern jlib_decl std::pair<const char *, const char *> peekKeyValuePair(IBuffere
     }
 }
 
-const char * peekStringList(std::vector<size32_t> & matchOffsets, IBufferedSerialInputStream & in, size32_t & len)
+const char * peekStringList(std::vector<size32_t> & matchOffsets, IBufferedSerialInputStream & in, size32_t & len, unsigned tupleSize)
 {
+    dbgassertex(tupleSize != 0);
     size32_t scanned = 0;
     size32_t startNext = 0;
     for (;;)
@@ -557,6 +558,7 @@ const char * peekStringList(std::vector<size32_t> & matchOffsets, IBufferedSeria
             if (startNext == scanned)
             {
                 //End of file, but the last string was null terminated...
+                //NB: matchOffsets.size() may not be a multiple of tupleSize - caller should check.
                 return start;
             }
             return nullptr;
@@ -567,7 +569,9 @@ const char * peekStringList(std::vector<size32_t> & matchOffsets, IBufferedSeria
             char next = start[offset];
             if (!next)
             {
-                if (offset == startNext)
+                // Detect list terminator: empty string at current offset, aligned to a tuple boundary.
+                // Tuple boundary example (tupleSize == 2): ensure terminator after a name/value pair.
+                if ((offset == startNext) && (matchOffsets.size() % tupleSize == 0))
                 {
                     //A zero length string terminates the list - include the empty string in the length
                     len = offset + 1;
