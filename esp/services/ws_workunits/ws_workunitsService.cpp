@@ -4268,6 +4268,51 @@ bool CWsWorkunitsEx::onWUAnalyseHotspot(IEspContext &context, IEspWUAnalyseHotsp
     return true;
 }
 
+bool CWsWorkunitsEx::onWUHelperFileArchive(IEspContext &context, IEspWUHelperFileArchiveRequest &req, IEspWUHelperFileArchiveResponse &resp)
+{
+    try
+    {
+        StringBuffer wuid(req.getWuid());
+        WsWuHelpers::checkAndTrimWorkunit("WUHelperFileArchive", wuid);
+        ensureWsWorkunitAccess(context, wuid.str(), SecAccess_Read);
+        PROGLOG("WUHelperFileArchive: %s", wuid.str());
+
+        IArrayOf<IConstWUFileOption>& wuFileOptions = req.getWUFileOptions();
+        if (!wuFileOptions.ordinality())
+            throw MakeStringException(ECLWATCH_INVALID_INPUT, "No file options specified.");
+
+        bool useGZip = (req.getDownloadOption() == CWUFileDownloadOption_GZIP);
+        Owned<IFile> tempDir = createUniqueTempDirectory();
+
+        StringBuffer archiveFileName, archiveFileNameWithPath;
+        CWsWuFileHelper helper(directories);
+        helper.createHelperFileArchive(context, wuid.str(), wuFileOptions, useGZip,
+            tempDir->queryFilename(), archiveFileName, archiveFileNameWithPath);
+
+        Owned<IFile> f = createIFile(archiveFileNameWithPath.str());
+        Owned<IFileIO> io = f->open(IFOread);
+        unsigned archiveSize = (unsigned) io->size();
+        if (archiveSize > MAX_ZAP_BUFFER_SIZE)
+            throw MakeStringException(ECLWATCH_INVALID_INPUT, "WUHelperFileArchive: archive file size is too big (>10M) to be retrieved.");
+
+        MemoryBuffer mb;
+        void* data = mb.reserve(archiveSize);
+        size32_t bytesRead = io->read(0, (size32_t) archiveSize, data);
+        mb.setLength(bytesRead);
+        resp.setThefile(mb);
+        resp.setThefile_mimetype(useGZip ? "application/x-gzip" : "application/zip");
+        VStringBuffer headerStr("attachment; filename=\"%s\"", archiveFileName.str());
+        context.addCustomerHeader("Content-Disposition", headerStr.str());
+        io->close();
+        recursiveRemoveDirectory(tempDir);
+    }
+    catch(IException* e)
+    {
+        FORWARDEXCEPTION(context, e, ECLWATCH_INTERNAL_ERROR);
+    }
+    return true;
+}
+
 
 static void getWUDetailsMetaProperties(double version, IArrayOf<IEspWUDetailsMetaProperty> & properties)
 {
@@ -4625,7 +4670,7 @@ int CWsWorkunitsSoapBindingEx::onStartUpload(IEspContext &ctx, CHttpRequest* req
             getUserWuAccessFlags(ctx, accessOwn, accessOthers, false);
             if ((accessOwn != SecAccess_Full) || (accessOthers != SecAccess_Full))
                 throw makeStringExceptionV(-1, "Resources %s and/or %s : Permission denied. Full Access Required.", OWN_WU_ACCESS, OTHERS_WU_ACCESS);
-    
+
             StringBuffer password;
             request->getParameter("Password", password);
 
@@ -4977,7 +5022,7 @@ bool CWsWorkunitsEx::onWUCreateZAPInfo(IEspContext &context, IEspWUCreateZAPInfo
         Owned<IFile> tempDir = createUniqueTempDirectory();
 
         StringBuffer zipFileName, zipFileNameWithPath;
-        //CWsWuFileHelper may need ESP's <Directories> settings to locate log files. 
+        //CWsWuFileHelper may need ESP's <Directories> settings to locate log files.
         CWsWuFileHelper helper(directories);
         helper.createWUZAPFile(context, cwu, zapInfoReq, tempDir->queryFilename(), zipFileName, zipFileNameWithPath, thorSlaveLogThreadPoolSize);
 
