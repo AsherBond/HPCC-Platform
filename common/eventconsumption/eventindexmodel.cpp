@@ -29,13 +29,17 @@ void IndexMRUCache::configure(const IPropertyTree &config)
 
 void IndexMRUCache::resize(__uint64 newCapacity)
 {
+    IndexMRUNullCacheReporter reporter;
     if (!enabled())
-        return;
-    if (newCapacity >= used)
+    {
+        if (used)
+            reserve(capacity, reporter);
+        capacity = 0;
+    }
+    else if (newCapacity >= used)
         capacity = newCapacity;
     else
     {
-        IndexMRUNullCacheReporter reporter;
         capacity = newCapacity;
         reserve(used - newCapacity, reporter);
     }
@@ -101,15 +105,20 @@ public: // IEventVisitationLink
         node = config.queryBranch("memory");
         if (node)
             memory.configure(*node);
-        if (!isEmptyString(dynamicCacheCapacityStr))
+        if (storage.isCacheEnabled() && !storage.getCacheSize())
         {
-            __uint64 dynamicCacheCapacity = strToBytes<__uint64>(dynamicCacheCapacityStr, StrToBytesFlags::ThrowOnError);
-            if (dynamicCacheCapacity && storage.isCacheEnabled() && !storage.getCacheSize())
+            __uint64 pageCacheCapacity = 0;
+            if (!isEmptyString(dynamicCacheCapacityStr))
             {
-                __uint64 memoryCacheCapacity = memory.getCacheSize();
-                if (memoryCacheCapacity < dynamicCacheCapacity)
-                    storage.resizeCache(std::max(Storage::DefaultPageSize, dynamicCacheCapacity - memoryCacheCapacity));
+                __uint64 dynamicCacheCapacity = strToBytes<__uint64>(dynamicCacheCapacityStr, StrToBytesFlags::ThrowOnError);
+                if (dynamicCacheCapacity)
+                {
+                    __uint64 memoryCacheCapacity = memory.getCacheSize();
+                    if ((memoryCacheCapacity + Storage::DefaultPageSize) <= dynamicCacheCapacity)
+                        pageCacheCapacity = dynamicCacheCapacity - memoryCacheCapacity;
+                }
             }
+            storage.resizeCache(pageCacheCapacity);
         }
     }
 

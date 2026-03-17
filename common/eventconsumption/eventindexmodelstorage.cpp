@@ -58,6 +58,24 @@ bool Storage::PageCache::enabled() const
     return (readTime > 0);
 }
 
+void Storage::PageCache::resize(__uint64 newSize)
+{
+    if (!newSize)
+    {
+        if (readTime)
+        {
+            priorReadTime = readTime;
+            readTime = 0;
+        }
+    }
+    else
+    {
+        if (!readTime)
+            readTime = priorReadTime;
+    }
+    IndexMRUCache::resize(newSize);
+}
+
 __uint64 Storage::PageCache::size(const IndexHashKey&)
 {
     return DefaultPageSize;

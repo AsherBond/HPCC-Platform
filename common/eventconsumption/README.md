@@ -21,6 +21,29 @@ A concrete implementation of `IEventFilter` that classifies all incoming events 
 
 Filter terms define conditions used to identify wanted events. Conditions may be applied based on event type and event attribute values. All events are considered wanted until at least one filter term is applied.
 
+Filter terms can be specified through direct manipulation of the filter, or with a configuration property tree. The property tree, without discussing value meaning, is as follows:
+
+    attribute/
+
+Optional and repeatable element describing applied to one event attribute.
+
+    attribute/@id
+    attribute/@values
+
+Required attributes identifying an event attribute by its name and the accepted values. See [Filter by Attribute](#filter-by-attribute) for valid `@values` content.
+
+    event/
+
+Optional and repeatable element describing a filter for one or more events.
+
+    event/@list
+    event/@type
+    event/@context
+
+Contextual specification of one or more events to be filtered. A list is a delimited collection of event names. A type is a single event name. A context is an internally defined group of logically related events. List takes precedence over type, which takes precedence over context.
+
+See [Filter by Event](#filter-by-event) for more information about filtering by events.
+
 ##### Filter by Event
 
 An event type term identifies either a single event type or a single event context, implicitly identifying every event type associated with that context.
@@ -338,21 +361,47 @@ Whether events are filtered before or after an event model is hard coded. Filter
 
 ## CIndexPlotOp
 
-Produces one or more 2D or 3D chart data sets from an input event data file using a configured index event model and explicit model modifications.
+A concrete implementation of [CEventConsumingOp](#ceventconsumingop) that uses a configuration property tree to produce one or more chart data sets from one or more binary event files. A data set is a one or two dimensional array of generated numeric values. Each cell value is derived from the set of events which match both horizontal and vertical criteria. The event set is referred to as a bucket.
 
-A 2D chart data set accepts model modifications for the X-axis. A 3D chart data set accepts model modifications for the Y-axis. The value of each data set cell is computed by traversing the input file after applying cell-specific configuration changes to the model. A 2D chart with 5 X values will traverse the input file 5 times. A 3D chart with 5 X values and 6 Y values will traverse the input file 30 times.
+A list of visitation link configurations determines which events are available for data set inclusion. Links include event filters and index event models. At least one link is required.
 
-Most plot options are specified using a property tree. This includes optional event filtering and an index events model. The inherited filter and model handling is suppressed. The configuration format is:
+A value selector chooses the numeric value to be generated for each cell. The accepted choices are hard-coded. An explicit choice is required.
 
-    @name
+An X axis configuration defines the data set columnar buckets. A configuration is required.
 
-Recommended identifier denoting the operation for which the configuration applies. As the initial operation supporting this configuration scheme, the value is optional. Given the potential for other operations to use this scheme, the value `index.plot` should be used. Any other value is invalid.
+A Y axis configuration defines the data set row buckets. If omitted, a single bucket containing all events is assumed.
 
-    @input
+Multiple data set variant configurations may be configured to create multiple data sets. Each data set is based on the same value selector and axis configurations. This allows multiple versions of the same data set to be generated for either different inputs or different link configurations. Multiple operations are required to produce data sets using different value selectors or axis values.
 
-Optional file path to a binary event file. Event input is required, and may be specified here or using the base class interface.
+What questions can be answered using chart data sets?
+1. What happened? A data set is a visual representation of recorded event activity. All cell values are computed from one iteration of specifed input events. A second iteration might be required to identify the proper axis buckets. Input events might be filtered, but are otherwise unchanged.
+1. What might have happened? Similar to "what happened?", an event model transforms the raw input stream into a projection of what would have been observed if the recording process had been configured differently.
+1. Which configuration might be "best"? Each cell value is the product of one input iteration where the events are transformed by visitation links tweaked for each cell by a combination of variant, columnar, and row adjustments.
 
-    @valueSelector
+The operation is focused on comparing configurations. Each input iteration produces a singular value. Some "what happened" questions can be answered, albeit inefficiently. Others, such as activity over time, cannot be answered at this time.
+
+The configuration format is as follows:
+
+    /operation/
+    /command/
+
+Preferred and alternate root configuration elements. The *command* terminology comes from `evtool`, the operation's initial host process. `operation` is preferred. The names are interchangeable.
+
+    /operation/@name
+
+Required identifier denoting the operation for which the configuration applies. The value must be `index.plot`.
+
+    /operation/input/
+
+Optional repeatable file path element specifying default files for event iteration. Values specified here can be overridden by `plot/input`, `x-axis/iteration/input`, and/or `y-axis/iteration/input`.  When not specified anywhere in the configuration, the operation's host process is responsible for supplying values.
+
+Paths specified in the configuration file may be relative or absolute. Wildcard resolution is not supported. When `evtool` is the host, wildcard resolution may be provided by the shell. Configurations without inputs are more easily reused, but do not have the flexibility of designating distinct files for data set, row, or column. Filters can be used to simulate the outcome, but iteration of all elements from all potential files is time consuming.
+
+    /operation/@input
+
+Optional file path to a binary event file. This remains for backward compatibility with original files. It is equivalent to one instance of the `input` element.
+
+    /operation/@valueSelector
 
 Required designation of which value will be accumulated for each plot. Must be one of these case insensitive choices:
 - readTime: the ReadTime attribute from IndexLoad events is accumulated
@@ -360,141 +409,120 @@ Required designation of which value will be accumulated for each plot. Must be o
 - elapsedTime: the sum of the ReadTime and ExpandTime attributes from IndexLoad events is accumulated
 - cacheMisses: the number of IndexCacheMiss events is counted
 
-    link/
+    /operation/link/
 
 Required repeatable element specifying a valid visitation link configuration. Each supported visitiation link configuration is described elsewhere in this document. This section focuses on values needed by the operation.
 
-    link/@kind
-    link/@id
+    /operation/link/@kind
+    /operation/link/@id
 
-A link kind controls which visitation link class to create. Its id distinguishes instances of link configurations with the same kind. Although unlikely, configuring both pre-model and post-model event filters is permitted. Both values are conditionally required.
+A link kind controls which visitation link class to create. Its id distinguishes instances of link configurations with the same kind. Configuring both pre-model and post-model event filters is permitted. Both values are conditionally required.
 
-If `@kind` is omitted, an [index model](#cindexeventmodel) configuration is assumed. To configure an [event filter](#ceventfilter), the value must be given as `event-filter`.
+If `@kind` is omitted, an [index model](#cindexeventmodel) configuration denoted as `index-events` is assumed. To configure an [event filter](#ceventfilter), the value must be given as `event-filter`.
 
 An `@id` is required only when `@kind` does not uniquely identify the link configuration instance and the operation intends to manipulate the configuration.
 
-A link configuration node is identified by combining the two values using a dotted notation like `<kind> [ '.' <id> ]`.
+A link configuration node is identified by combining the two values using a dotted notation like `<kind> [ '.' <id> ]`. The link kind is sufficient when only one instance with the value is configured.
 
-    plot/
+    /operation/plot/
 
-Optional and repeatable element where each instance describes link configuration changes to be made for every value in a plot. This enables one invocation of the operation to produce multiple chart data sets, each showing the same data relationship but with different modeled pre-conditions. While a 2D chart configuration could be converted to a 3D chart to show the same data in one chart, a 3D chart cannot add another axis.
+Optional repeatable root element of a data set variation. When present it must contain at least one `delta` or `input` child element.
 
-    plot/
-        delta/
+    /operation/plot/@name
 
-Required and repeatable element where each instance describes a single link configuration change to be made for every cell in a chart data set.
+Required label differentiating one variation from another. Uniqueness is neither required nor enforced.
 
-    plot/
-        delta/
-            @linkId
+    /operation/plot/delta/
 
-Optional designation of the link configuration targeted by the change. If omitted, `index-events` is assumed.
+Conditional repeatable element describing a single visitation link change.
 
-    plot/
-        delta/
-            @xpath
+At least one `delta` or one `input` is required. Both are permitted.
 
-Required link configuration datum targeted by the change.
+    /operation/plot/delta/@linkId
 
-    plot/
-        delta/
-            @value
+Optional visitation link identifier. If omitted or empty, `index-events` is assumed.
 
-Optional changed value. Omission removes the targeted datum, while presence updates it.
+    /operation/plot/delta/@xpath
 
-    x-axis/
+Required XPath into the identified visitation link configuration, where `link` is the root element.
 
-Required element describing link configuration changes required to compute each X-axis value in a chart data set.
+    /operation/plot/delta/@value
 
-    x-axis/
-        iteration/
+Optional visitation link configuration value. If omitted, the XPath is removed.
 
-Required element describing link configuration changes required to compute a single X-axis value of a chart data set.
+    /operation/plot/input/
 
-    x-axis/
-        iteration/
-            @label
+Conditional repeatable input file path element. Default input file events are unchanged if omitted and replaced for each data set cell when given. Axis level input file path settings cannot remove event files specified here.
 
-Optional human readable description of the changes. When not-empty, the value is used as a column header in chart data sets.
+At leasrt one `input` or one `delta` is required. Both are permitted.
 
-Optional human readable description of the changes.
-- When not-empty, the value is used as a row header in chart data sets.
-- When empty, the row header text depends on the described change:
-  - If one `delta` is defined, `delta/@value` is used as the header text. If the value is can be converted to a byte count, the byte count is used.
-  - The use of multiple `delta`s makes the header text "ambiguous".
+    /operation/x-axis/
 
-    x-axis/
-        iteration/
-            delta/
+Required root element describing X axis columnar values.
 
-Required and repeatable element where each instance describes a single link configuration change to be made for each cell in a column.
+    /operation/x-axis/@linkId
+    /operation/x-axis/@xpath
 
-    x-axis/
-        iteration/
-            delta/
-                @linkId
+Optional default visitation link identifier and change location for each axis column. `@xpath` applies to every column that does not explicitly set its own value. `@linkId` applies to any column that omits both `@xpath` and `@linkId`.
 
-Optional designation of the link configuration targeted by the change. If omitted, `index-events` is assumed.
+    /operation/x-axis/iteration/
 
-    x-axis/
-        iteration/
-            delta/
-                @xpath
+Conditional repeatable column definition.
 
-Required link configuration datum targeted by the change.
+    /operation/x-axis/iteration/@name
 
-    x-axis/
-        iteration/
-            delta/
-                @value
+Optional custom column label. When omitted or empty the label will be:
+- the value of `delta/@value` when exactly one instance of `delta` is configured; or
+- `ambiguous` when zero or multiple instances of `delta` are configured.
 
-Optional changed value. Omission removes the targeted datum, while presence updates it.
+    /operation/x-axis/iteration/delta/
 
-    y-axis/
+Conditional repeatable column definition. Each iteration must contain at least one `delta` or at least one `input` element.
 
-Optional element describing link configuration changes required to compute each Y-axis value in a 3D chart data set.
+    /operation/x-axis/iteration/delta/@linkId
 
-    y-axis/
-        iteration/
+Optional visitation link identifier. If omitted or empty, `index-events` is assumed.
 
-Required element describing link configuration changes required to compute a single Y-axis value of a chart data set.
+    /operation/x-axis/iteration/delta/@xpath
 
-    y-axis/
-        iteration/
-            @label
+Required XPath into the identified visitation link configuration, where `link` is the root element.
 
-Optional human readable description of the changes.
-- When not-empty, the value is used as a row header in chart data sets.
-- When empty, the row header text depends on the described change:
-  - If one `delta` is defined, `delta/@value` is used as the header text. If the value is can be converted to a byte count, the byte count is used.
-  - The use of multiple `delta`s makes the header text "ambiguous".
+    /operation/x-axis/iteration/delta/@value
 
-    y-axis/
-        iteration/
-            delta/
+Optional visitation link configuration value. If omitted, the XPath is removed.
 
-Required and repeatable element where each instance describes a single link configuration change to be made for each cell in a row.
+    /operation/x-axis/iteration/input/
 
-    y-axis/
-        iteration/
-            delta/
-                @linkId
+Conditional repeatable input file path element. Default input file events are unchanged if omitted and replaced for each data set cell when given. Can be combined with `plot` and `y-axis` inputs.
 
-Optional designation of the link configuration targeted by the change. If omitted, `index-events` is assumed.
+    /operation/x-axis/value/
 
-    y-axis/
-        iteration/
-            delta/
-                @xpath
+Conditional repeatable values used in combination with `x-axis/@xpath` and `xpath/@linkId`. Ignored in the presence of `x-axis/iteration`. This is shorthand markup to specify column values that all depend on exactly one visitation link configuration change.
 
-Required link configuration datum targeted by the change.
+Cannot be used if:
+- `x-axis/iteration` is present
+- a custom column name is needed
+- custom inputs are needed
+- multiple visitation link configuration changes are needed
 
-    y-axis/
-        iteration/
-            delta/
-                @value
+    /operation/x-axis/@minValue
+    /operation/x-axis/@maxValue
+    /operation/x-axis/@steps
 
-Optional changed value. Omission removes the targeted datum, while presence updates it.
+Conditional values used in combination with `x-axis/@xpath` and `x-axis/@linkId`. Ignored in the presence of either `x-axis/iteration` or `x-axis/value`. This is shorthand markup to dynamically compute uniformly distributed column values dependent upon a single visitation link configuration change.
+
+Cannot be used if:
+- `x-axis/iteration` is present
+- `x-axis/value` is present
+- a custom column name is needed
+- custom inputs are needed
+- multiple visitation link configuration changes are needed
+
+```
+    /operation/y-axis/
+```
+
+Optional root element defining row buckets. If omitted, the data set will have one implied row bucket. Element content matches the definition of `x-axis`, with the obvious exception that `x-axis` references to columns are to be interpreted as row references.
 
 ## CIndexFileSummary
 
