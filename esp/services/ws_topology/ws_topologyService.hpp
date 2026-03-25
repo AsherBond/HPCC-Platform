@@ -85,6 +85,8 @@ public:
 
 class CWsTopologyEx : public CWsTopology
 {
+    friend class WsTopologyTests;
+
 private:
 
     CTpWrapper m_TpWrapper;

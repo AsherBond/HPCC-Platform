@@ -57,6 +57,7 @@ include_directories (
          ./../../bindings/SOAP/xpp
          ./../..//esplib
          ${HPCC_SOURCE_DIR}/common/thorhelper
+         ${HPCC_SOURCE_DIR}/testing/unittests
     )
 
 ADD_DEFINITIONS( -D_USRDLL -DWS_TOPOLOGY_EXPORTS -DWSWU_API_LOCAL -DESP_SERVICE_WsTopology)
