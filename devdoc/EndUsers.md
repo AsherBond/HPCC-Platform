@@ -170,6 +170,8 @@ A collection of “How To...” recordings that demonstrate specific tasks and i
 
 Best practices for managing secrets securely within the system.
 
+- [Akeyless Secrets](../helm/examples/secrets/README-akeyless-vault-secrets.md) Covers HPCC use of Akeyless Vault for managing secrets using access key authentication.
+
 - [Kubernetes Secrets](../helm/examples/secrets/README-kubernetessecrets.md)
 Covers the native Kubernetes approach to secrets management.
 
