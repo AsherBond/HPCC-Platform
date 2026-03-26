@@ -102,6 +102,7 @@ interface IStorageApiInfo;
 // This interface should only have specialized methods for accessing the plane information, rather a general function to return a property tree
 interface IStoragePlane: extends IInterface
 {
+    virtual const char * queryName() const = 0;
     virtual const char * queryPrefix() const = 0;
     virtual const char * queryMirrorPrefix() const = 0;
     virtual unsigned numDevices() const = 0;
@@ -121,11 +122,14 @@ interface IStoragePlane: extends IInterface
     virtual const IPropertyTree * queryConfig() const = 0; // More specific functions strongly preferred
 };
 
+using StoragePlaneArray = IConstArrayOf<IStoragePlane>;
+
 extern jlib_decl const IStoragePlane * getStoragePlaneByName(const char * name, bool required);
 extern jlib_decl const IStoragePlane * getStoragePlaneFromPath(const char *filePath, bool required);
 extern jlib_decl const IStoragePlane * getDataStoragePlane(const char * name, bool required);
 extern jlib_decl const IStoragePlane * getRemoteStoragePlane(const char * name, bool required);
 extern jlib_decl IStoragePlane * createStoragePlane(IPropertyTree *meta);
+extern jlib_decl void getDataStoragePlanes(StoragePlaneArray &planes);
 
 extern jlib_decl bool getDefaultStoragePlane(StringBuffer &ret);
 extern jlib_decl bool getDefaultSpillPlane(StringBuffer &ret);
