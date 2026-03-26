@@ -59,6 +59,10 @@
 
 constexpr CompressionMethod defaultBinaryCompressionMethod = COMPRESS_METHOD_ZSTD3;
 
+const CCharacterSet validTagCharacters([](unsigned char c) { return (!isspace(c) && c != '>' && c != '/'); });
+const CCharacterSet validAttrCharacters([](unsigned char c) { return (c && !isspace(c) && c != '=' && c != '>' && c != '/'); });
+const CCharacterSet notSpaceNorGreater([](unsigned char c) { return (!isspace(c) && c != '>'); });
+
 class NullPTreeIterator final : implements IPropertyTreeIterator
 {
 public:
@@ -5503,7 +5507,7 @@ restart:
             skipWS();
         StringBuffer completeTagname;
         unsigned afterFirstColonOffset = 0;
-        while (!isspace(nextChar) && nextChar != '>' && nextChar != '/')
+        while (validTagCharacters.includes(nextChar))
         {
             completeTagname.append(nextChar);
             if ((nextChar == ':') && (afterFirstColonOffset == 0))
@@ -5534,7 +5538,7 @@ restart:
 
             attrName.setLength(1);
             attrval.clear();
-            while (nextChar && !isspace(nextChar) && nextChar != '=' && nextChar != '>' && nextChar != '/')
+            while (validAttrCharacters.includes(nextChar))
             {
                 attrName.append(nextChar);
                 readNext();
@@ -5628,7 +5632,7 @@ restart:
                 }
                 readNext();
                 unsigned i = 0;
-                while (!isspace(nextChar) && nextChar != '>')
+                while (notSpaceNorGreater.includes(nextChar))
                 {
                     if ((i >= completeTagname.length()) ||
                         (nextChar != completeTagname.charAt(i++)))
@@ -5802,7 +5806,7 @@ public:
                 stack.append(*stateInfo);
                 if ('/' == nextChar)
                     error("Unmatched close tag encountered");
-                while (!isspace(nextChar) && nextChar != '>')
+                while (notSpaceNorGreater.includes(nextChar))
                 {
                     stateInfo->tag.append(nextChar);
                     readNext();
@@ -5856,7 +5860,7 @@ public:
 
                     attrName.setLength(1);
                     attrval.clear();
-                    while (nextChar && !isspace(nextChar) && nextChar != '=' && nextChar != '>' && nextChar != '/')
+                    while (validAttrCharacters.includes(nextChar))
                     {
                         attrName.append(nextChar);
                         readNext();

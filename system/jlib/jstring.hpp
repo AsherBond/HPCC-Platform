@@ -25,6 +25,7 @@
 #include "jstream.hpp"
 #include "jbuff.hpp"
 #include <string>
+#include <array>
 
 // A Java compatible String and StringBuffer class - useful for dynamic strings.
 #ifdef _DEBUG
@@ -675,6 +676,39 @@ inline byte getHexPair(const char * s)
 {
     return hex2digit(s[0]) << 4 | hex2digit(s[1]);
 }
+
+//---------------------------------------------------------------------------------------------------------------------
+
+// A class for efficiently checking if a character is in a set of single byte characters.
+// The set is defined by a function that returns true for characters in the set, and false for characters not in the set.
+// e.g. const CCharacterSet validAttrCharacters([](unsigned char c) { return (c && !isspace(c) && c != '=' && c != '>' && c != '/'); });
+class CCharacterSet
+{
+public:
+    template <typename MatchFunc>
+    CCharacterSet(MatchFunc matchFunc)
+    {
+        matchesTable.fill(0);
+        for (unsigned i = 0; i < 256; i++)
+        {
+            if (matchFunc((unsigned char)i))
+            {
+                matchesTable[i >> 6] |= (1ULL << (i & 63));
+            }
+        }
+    }
+    CCharacterSet(const CCharacterSet & other) = default;
+
+    bool includes(char c) const
+    {
+        unsigned char uc = (unsigned char)c;
+        return (matchesTable[uc >> 6] & (1ULL << (uc & 63))) != 0;
+    }
+
+private:
+    std::array<uint64_t, 4> matchesTable;
+};
+
 
 
 //General purpose function for processing option strings in the form option[=value],option[=value],...
