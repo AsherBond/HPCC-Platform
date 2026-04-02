@@ -3752,4 +3752,71 @@ void fileread(const char *srcPath, const char *dstPath, offset_t numBytes)
     }
 }
 
+
+void checkDelta(const char *filename)
+{
+    OwnedIFile iFile = createIFile(filename);
+    OwnedIFileIO iFileIO = iFile->open(IFOread);
+    if (!iFileIO)
+    {
+        printf("Failed to open delta file: %s\n", filename);
+        return;
+    }
+
+    const char *deltaHeader = "<CRC>0000000000</CRC><SIZE>0000000000000000</SIZE>";
+    unsigned deltaHeaderCrcOff = 5;
+    unsigned deltaHeaderSizeStart = 21;
+
+    size32_t lenDeltaHeader = strlen(deltaHeader);
+    MemoryBuffer tmp;
+    char *ptr = (char *)tmp.reserveTruncate(lenDeltaHeader + 1);
+
+    offset_t pos = 0;
+    bool hasCrcHeader = false;
+    unsigned embeddedCrc = 0;
+
+    if (lenDeltaHeader == iFileIO->read(0, lenDeltaHeader, ptr))
+    {
+        ptr[lenDeltaHeader] = '\0';
+        if (0 == memcmp(deltaHeader, ptr, 5))
+        {
+            pos = deltaHeaderSizeStart;
+            hasCrcHeader = true;
+            embeddedCrc = (unsigned)atoi64_l(ptr + deltaHeaderCrcOff, 10);
+            if (0 == memcmp(deltaHeader + deltaHeaderSizeStart, ptr + deltaHeaderSizeStart, 6)) // has <SIZE> too
+            {
+                pos = lenDeltaHeader;
+            }
+        }
+    }
+
+    if (!hasCrcHeader)
+    {
+        printf("File %s does not appear to have a valid <CRC> header.\n", filename);
+        return;
+    }
+
+    offset_t fSize = iFileIO->size();
+    OwnedIFileIOStream iFileIOStream = createIOStream(iFileIO);
+    iFileIOStream->seek(pos, IFSbegin);
+    OwnedIFileIOStream progressedIFileIOStream = createProgressIFileIOStream(iFileIOStream, fSize, "Read progress", 60);
+
+    Owned<ICrcIOStream> crcPipeStream = createCrcPipeStream(progressedIFileIOStream);
+    Owned<IIOStream> ios = createBufferedIOStream(crcPipeStream);
+
+    char buf[4096];
+    while (ios->read(sizeof(buf), buf) > 0)
+    {
+        // just advancing
+    }
+
+    unsigned calculatedCrc = crcPipeStream->queryCrc();
+    printf("\nEmbedded CRC:\t%u\nCalculated CRC:\t%u\n", embeddedCrc, calculatedCrc);
+
+    if (embeddedCrc == calculatedCrc)
+        printf("Result: MATCH (Delta file is intact)\n");
+    else
+        printf("Result: MISMATCH (Delta file may be corrupt)\n");
+}
+
 } // namespace daadmin
