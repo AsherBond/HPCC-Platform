@@ -83,4 +83,8 @@
   <xi:include href="HPCCClientTools/CT_Mods/CT_ESDL_CLI.xml"
               xpointer="xpointer(//*[@id='ESDL_CLI'])"
               xmlns:xi="http://www.w3.org/2001/XInclude"/>
+
+  <xi:include href="HPCCClientTools/CT_Mods/CT_JSON_XML_Tools.xml"
+              xpointer="xpointer(//*[@id='JSON_XML_Tools'])"
+              xmlns:xi="http://www.w3.org/2001/XInclude"/>
 </book>
