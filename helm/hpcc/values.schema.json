@@ -816,7 +816,7 @@
             "type": {
               "description": "Type of cloud storage API to use",
               "type": "string",
-              "enum": ["azurefile", "azureblob"]
+              "enum": ["azurefile", "azureblob", "s3"]
             },
             "managed": {
               "description": "Use managed identity for authentication",
