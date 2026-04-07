@@ -1,4 +1,5 @@
 import * as React from "react";
+import { createPortal } from "react-dom";
 import { Button, Dropdown, Field, Input, Label, Link, makeStyles, mergeClasses, Option, Spinner } from "@fluentui/react-components";
 import { useOnEvent } from "@fluentui/react-hooks";
 import { CheckmarkCircleRegular, DataBarVerticalFilled, DismissCircleRegular, QuestionCircleRegular, TableRegular, WarningRegular } from "@fluentui/react-icons";
@@ -68,7 +69,7 @@ const useStyles = makeStyles({
     toolBar: {
         display: "flex",
         flexDirection: "row",
-        padding: "4px 8px 8px 8px"
+        padding: "6px 0 0 0"
     },
     controlsWrapper: {
         display: "flex",
@@ -107,14 +108,6 @@ const useStyles = makeStyles({
     statusMessage: {
         alignSelf: "center",
         minWidth: "100px"
-    },
-    fullscreen: {
-        position: "absolute",
-        top: "0",
-        left: "0",
-        width: "100%",
-        height: "100%",
-        backgroundColor: "#fff"
     },
 });
 
@@ -369,6 +362,7 @@ export const ECLPlayground: React.FunctionComponent<ECLPlaygroundProps> = (props
     const [syntaxErrors, setSyntaxErrors] = React.useState<any[]>([]);
     const [syntaxStatusIcon, setSyntaxStatusIcon] = React.useState(SyntaxCheckResult.Unknown);
     const [eclSamples, setEclSamples] = React.useState<{ key: string, text: string }[]>([]);
+    const [toolbarContainer, setToolbarContainer] = React.useState<HTMLElement | null>(null);
 
     React.useEffect(() => {
         if (wuid) {
@@ -482,14 +476,7 @@ export const ECLPlayground: React.FunctionComponent<ECLPlaygroundProps> = (props
                     <DockPanelItem key="eclEditor" title={nlsHPCC.ECL}>
                         <HolyGrail
                             main={<ECLSourceEditor text={query} setEditor={setEditor} />}
-                            footer={
-                                <ECLEditorToolbar
-                                    editor={editor} setSyntaxErrors={setSyntaxErrors}
-                                    syntaxStatusIcon={syntaxStatusIcon} setSyntaxStatusIcon={setSyntaxStatusIcon}
-                                    workunit={workunit} setWorkunit={setWorkunit}
-                                    outputMode={outputMode} setOutputMode={setOutputMode}
-                                />
-                            }
+                            footer={<div ref={setToolbarContainer} />}
                         />
                     </DockPanelItem>
                     <DockPanelItem key="graph" title={nlsHPCC.Graphs} location="split-right" relativeTo="eclEditor">
@@ -519,5 +506,14 @@ export const ECLPlayground: React.FunctionComponent<ECLPlaygroundProps> = (props
                 </DockPanel>
             }
         />
+        {toolbarContainer && createPortal(
+            <ECLEditorToolbar
+                editor={editor} setSyntaxErrors={setSyntaxErrors}
+                syntaxStatusIcon={syntaxStatusIcon} setSyntaxStatusIcon={setSyntaxStatusIcon}
+                workunit={workunit} setWorkunit={setWorkunit}
+                outputMode={outputMode} setOutputMode={setOutputMode}
+            />,
+            toolbarContainer
+        )}
     </div>;
 };
