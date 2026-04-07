@@ -17,6 +17,7 @@ const logger = scopedLogger("src-react/hooks/metrics.ts");
 const METRIC_OPTIONS_2 = "MetricOptions-2";
 const METRIC_OPTIONS_3 = "MetricOptions-3";
 const METRIC_OPTIONS_4 = "MetricOptions-4";
+export const GLOBAL_FAKE_ID = "<global>";
 
 export const METRICS_GRAPH_TRACK_SELECTION = "metrics_graph_trackSelection";
 
@@ -368,15 +369,7 @@ export enum ScopeType {
 }
 
 export const WURootScopeTypes = [
-    ScopeType.subgraph,
-    ScopeType.activity,
-    ScopeType.allocator,
-    ScopeType.section,
-    ScopeType.operation,
-    ScopeType.workflow,
-    ScopeType.file,
-    ScopeType.channel,
-    ScopeType.unknown
+    ScopeType.all
 ];
 
 export const WULogicalRootScopeTypes = [
@@ -475,6 +468,9 @@ export function useWorkunitMetrics(
                 setData(response?.data.map(row => {
                     if (exceptionsMap[row.name]) {
                         row.__exceptions = exceptionsMap[row.name];
+                    }
+                    if (row.id === "") {
+                        row.id = GLOBAL_FAKE_ID;
                     }
                     return row;
                 }));
