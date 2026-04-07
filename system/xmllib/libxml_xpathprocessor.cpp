@@ -1842,16 +1842,23 @@ private:
         if (xml==nullptr) //means delete content
             return;
 
-        xmlParserCtxtPtr parserCtx = xmlCreateDocParserCtxt((const unsigned char *)xml);
-        if (!parserCtx)
-            throw MakeStringException(-1, "CSectionalXmlDocModel:setContent: Unable to init parse of %s XML content", section);
-        parserCtx->node = sect;
-        xmlParseDocument(parserCtx);
-        int wellFormed = parserCtx->wellFormed;
-        xmlFreeDoc(parserCtx->myDoc); //dummy document
-        xmlFreeParserCtxt(parserCtx);
-        if (!wellFormed)
-           throw MakeStringException(-1, "CSectionalXmlDocModel:setContent xml string: Unable to parse %s XML content", section);
+        xmlDocPtr contentDoc = xmlReadMemory(xml, strlen(xml), section, nullptr, 0);
+        if (!contentDoc)
+            throw MakeStringException(-1, "CSectionalXmlDocModel:setContent xml string: Unable to parse %s XML content", section);
+
+        xmlNodePtr contentRoot = xmlDocGetRootElement(contentDoc);
+        if (!contentRoot)
+        {
+            xmlFreeDoc(contentDoc);
+            throw MakeStringException(-1, "CSectionalXmlDocModel:setContent xml string: Missing root node for %s XML content", section);
+        }
+
+        xmlNodePtr contentCopy = xmlDocCopyNode(contentRoot, doc, 1);
+        xmlFreeDoc(contentDoc);
+        if (!contentCopy)
+            throw MakeStringException(-1, "CSectionalXmlDocModel:setContent xml string: Unable to copy %s XML content", section);
+
+        xmlAddChild(sect, contentCopy);
     }
     virtual void appendContent(const char *section, const char *name, const char *xml) override
     {

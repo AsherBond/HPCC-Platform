@@ -88,7 +88,9 @@
 #ifndef __BIG_ENDIAN
 #define __BIG_ENDIAN 2
 #endif
+#ifndef __BYTE_ORDER
 #define __BYTE_ORDER __LITTLE_ENDIAN
+#endif
 
 typedef unsigned size32_t;
 
@@ -313,7 +315,9 @@ inline int daemon(int, int) { return -1; }
     char __glibc_reserved[32];
   };
 #endif
+#ifndef __BYTE_ORDER
 #define __BYTE_ORDER __LITTLE_ENDIAN
+#endif
 #define _atoi64     atoll
 #define _lseek      lseek
 #define _llseek     ::lseek

@@ -62,14 +62,6 @@ updates:
     open-pull-requests-limit: 0
 
   - package-ecosystem: "docker"
-    directory: "/dockerfiles/platform-build-centos-7"
-    schedule:
-      interval: "daily"
-    commit-message:
-      prefix: "[docker]"
-    open-pull-requests-limit: 0
-
-  - package-ecosystem: "docker"
     directory: "/dockerfiles/platform-build-centos-8"
     schedule:
       interval: "daily"

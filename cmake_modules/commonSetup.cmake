@@ -355,7 +355,7 @@ IF ("${COMMONSETUP_DONE}" STREQUAL "")
       SET (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}  -Werror=bitwise-op-parentheses -Werror=tautological-compare")
       SET (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}  -Wno-switch-enum -Wno-format-zero-length -Wno-switch")
       SET (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}  -Qunused-arguments")  # Silence messages about pthread not being used when linking...
-      SET (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}  -Wno-inconsistent-missing-override -Wno-unknown-warning-option")  # Until we fix them all, whcih would be a huge task...
+      SET (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}  -Wno-inconsistent-missing-override -Wno-unnecessary-virtual-specifier -Wno-unknown-warning-option")  # Until we fix them all, which would be a huge task...
       if (CLANG_VERSION VERSION_GREATER 3.6 OR CLANG_VERSION VERSION_EQUAL 3.6 OR APPLE_CLANG_VERSION VERSION_GREATER 6.0)
         SET (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-pointer-bool-conversion")
       endif()
@@ -371,6 +371,9 @@ IF ("${COMMONSETUP_DONE}" STREQUAL "")
   # Define strict compiler flags
   if (CMAKE_COMPILER_IS_GNUCC OR CMAKE_COMPILER_IS_CLANG)
     SET (STRICT_CXX_FLAGS "-Wall -Wextra -Wno-switch -Wno-unused-parameter -Werror")
+    if (CMAKE_COMPILER_IS_CLANGXX)
+      SET (STRICT_CXX_FLAGS "${STRICT_CXX_FLAGS} -Wno-error=unnecessary-virtual-specifier")
+    endif()
   else()
     SET (STRICT_CXX_FLAGS "")
   endif()
