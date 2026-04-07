@@ -717,6 +717,10 @@
               "type": "boolean",
               "default": true
             },
+            "compression": {
+              "description": "Compression type",
+              "type": "string"
+            },
             "eclwatchVisible": {
               "type": "boolean"
             },
