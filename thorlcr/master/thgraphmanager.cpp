@@ -1311,46 +1311,29 @@ void closeThorServerStatus()
 }
 
 /*
- * Waits on recv for another wuid/graph to run.
+ * Waits on queue(s) for another wuid/graph to run.
  * Return values:
- * -2 = reply to client failed
- * -1 = recv failed/timedout
+ * -1 = dequeue failed/timedout
  *  0 = unrecognised format, or wuid mismatch
  *  1 = success. new graph/wuid received.
  */
-static int recvNextGraph(unsigned timeoutMs, const char *wuid, StringBuffer &retWfid, StringBuffer &retWuid, StringBuffer &retGraphName, unsigned __int64 priority)
+static int recvNextGraph(unsigned timeoutMs, StringBuffer &retWfid, StringBuffer &retWuid, StringBuffer &retGraphName, unsigned __int64 priority)
 {
+    dbgassertex(thorQueue);
+
     StringBuffer next;
-    CMessageBuffer msg;
-    if (thorQueue)
+
     {
         Owned<IJobQueueItem> item = thorQueue->dequeuePriority(priority, timeoutMs);
         if (!item)
             return -1;
         next.set(item->queryWUID());
     }
-    else
-    {
-        if (!queryWorldCommunicator().recv(msg, NULL, MPTAG_THOR, nullptr, timeoutMs))
-            return -1;
-        msg.read(next);
-    }
 
     // validate
     StringArray sArray;
     sArray.appendList(next, "/");
-    if (3 == sArray.ordinality())
-    {
-        if (!thorQueue)
-        {
-            if (wuid && !streq(sArray.item(1), wuid))
-                return 0; // mismatch/ignore
-            msg.clear().append(true);
-            if (!queryWorldCommunicator().reply(msg, 60*1000)) // should be quick!
-                return -2; // failed to reply to client
-        }
-    }
-    else
+    if (3 != sArray.ordinality())
     {
         IWARNLOG("Unrecognised job format received: %s", next.str());
         return 0; // unrecognised format, ignore
@@ -1363,6 +1346,19 @@ static int recvNextGraph(unsigned timeoutMs, const char *wuid, StringBuffer &ret
 
 
 static std::vector<CConnectedWorkerDetail> connectedWorkers;
+void setConnectedWorkers(const std::vector<CConnectedWorkerDetail> &workers)
+{
+    connectedWorkers = workers;
+}
+
+static unsigned __int64 k8sStartedTs = 0;
+static unsigned __int64 k8sReadyTs = 0;
+void setK8sResourceTimestamps(unsigned __int64 startedTs, unsigned __int64 readyTs)
+{
+    k8sStartedTs = startedTs;
+    k8sReadyTs = readyTs;
+}
+
 void publishPodNames(IWorkUnit *workunit, const char *graphName, const std::vector<CConnectedWorkerDetail> *_connectedWorkers)
 {
     // skip if Thor manager already published (implying worker pods already published too)
@@ -1422,7 +1418,7 @@ void auditThorJobEvent(const char *eventName, const char *wuid, const char *grap
     LOG(MCauditInfo, "%s", msg.c_str());
 }
 
-void thorMain(ILogMsgHandler *logHandler, const char *wuid, const char *graphName)
+void thorMain(ILogMsgHandler *logHandler)
 {
     aborting = 0;
     unsigned multiThorMemoryThreshold = globals->getPropInt("@multiThorMemoryThreshold")*0x100000;
@@ -1450,7 +1446,6 @@ void thorMain(ILogMsgHandler *logHandler, const char *wuid, const char *graphNam
 
         enableForceRemoteReads(); // forces file reads to be remote reads if they match environment setting 'forceRemotePattern' pattern.
 
-        bool disableQueuePriority = getComponentConfigSP()->getPropBool("expert/@disableQueuePriority");
         Owned<CJobManager> jobManager = new CJobManager(logHandler);
         const char * thorname = globals->queryProp("@name");
         double thorRate = getThorRate(queryNodeClusterWidth());  // This doesn't feel quite right to call a global function to get the width, but ok for now.
@@ -1463,162 +1458,30 @@ void thorMain(ILogMsgHandler *logHandler, const char *wuid, const char *graphNam
                 unsigned lingerPeriod = globals->getPropInt("@lingerPeriod", defaultThorLingerPeriod)*1000;
                 dbgassertex(lingerPeriod>=1000); // NB: the schema or the default ensure the linger period is non-zero
 
-                // NB: in k8s a Thor instance is explicitly started to run a specific wuid/graph
-                // it will not listen/receive another job/graph until the 1st explicit request the job
-                // started to is complete.
-
                 StringBuffer queueNames;
                 getClusterThorQueueName(queueNames, globals->queryProp("@name"));
-                if (disableQueuePriority)
-                {
-                    queueNames.append(",");
-                    getClusterLingerThorQueueName(queueNames, globals->queryProp("@name"));
-                }
+                queueNames.append(',');
+                getClusterThorInternalQueueName(queueNames, globals->queryProp("@name"));
                 PROGLOG("Thor queue names: %s", queueNames.str());
                 thorQueue.setown(createJobQueue(queueNames));
                 thorQueue->connect(false);
 
-                StringBuffer currentWfId; // not filled/not used until recvNextGraph() is called.
-                StringBuffer currentGraphName(graphName);
-                StringBuffer currentWuid(wuid);
+                CTimeMon lingerTimer(lingerPeriod);
 
-                CTimeMon lingerTimer(lingerPeriod); // NB: reset after it actually runs a job
-
-                // baseImageVersion corresponds to the helm chart image version
-                const char *baseImageVersion = getenv("baseImageVersion");
-                // runtimeImageVersion will either match baseImageVersion, or have been set in the yaml to the runtime "platformVersion"
-                const char *runtimeImageVersion = getenv("runtimeImageVersion");
-                bool platformVersioningAvailable = true;
-                if (isEmptyString(baseImageVersion) || isEmptyString(runtimeImageVersion))
-                {
-                    IWARNLOG("baseImageVersion or runtimeImageVersion missing from environment");
-                    platformVersioningAvailable = false;
-                }
                 while (true)
                 {
-                    {
-                        Owned<IWorkUnitFactory> factory;
-                        Owned<IConstWorkUnit> workunit;
-                        factory.setown(getWorkUnitFactory());
-                        workunit.setown(factory->openWorkUnit(currentWuid));
-                        if (!workunit)
-                        {
-                            IWARNLOG("Discarding unknown wuid: wuid=%s, graph=%s", currentWuid.str(), currentGraphName.str());
-                            currentWuid.clear();
-                        }
-                        else
-                        {
-                            SessionId agentSessionID = workunit->getAgentSession();
-                            if (agentSessionID <= 0)
-                            {
-                                IWARNLOG("Discarding job with invalid sessionID: wuid=%s, graph=%s (sessionID=%" I64F "d)", currentWuid.str(), currentGraphName.str(), agentSessionID);
-                                currentWuid.clear();
-                            }
-                            else if (querySessionManager().sessionStopped(agentSessionID, 0))
-                            {
-                                IWARNLOG("Discarding agentless job: wuid=%s, graph=%s", currentWuid.str(), currentGraphName.str());
-                                currentWuid.clear();
-                            }
-                            else
-                            {
-                                bool runJob = true;
-                                if (platformVersioningAvailable)
-                                {
-                                    SCMStringBuffer jobVersion;
-                                    workunit->getDebugValue("platformVersion", jobVersion);
-                                    if (jobVersion.length())
-                                    {
-                                        if (!streq(jobVersion.str(), runtimeImageVersion))
-                                            runJob = false;
-                                    }
-                                    else if (!streq(baseImageVersion, runtimeImageVersion))
-                                    {
-                                        // This is a custom runtime version, which did not specify a jobVersion,
-                                        // meaning it intended to use the regular baseImageVersion.
-                                        // Therefore we mismatch
-                                        runJob = false;
-                                    }
-                                    if (!runJob) // version mismatch, delay and queue for other instance to take
-                                    {
-                                        assertex(thorQueue); // it should never be possible for a non-lingering Thor to have a mismatch
-
-                                        // This Thor has picked up a job that has submitted with a different #option platformVersion.
-                                        // requeue it, and wait a bit, so that it can either be picked up by an existing compatible Thor, or
-                                        // an agent
-
-                                        VStringBuffer job("%s/%s/%s", currentWfId.str(), currentWuid.str(), currentGraphName.str());
-                                        Owned<IJobQueueItem> item = createJobQueueItem(job);
-                                        item->setOwner(workunit->queryUser());
-                                        item->setPriority(workunit->getPriorityValue());
-                                        thorQueue->enqueue(item.getClear());
-                                        currentWuid.clear();
-                                        constexpr unsigned pauseSecs = 10;
-                                        if (jobVersion.length())
-                                            WARNLOG("Job=%s requeued due to version mismatch (this Thor version=%s, Job version=%s). Pausing for %u seconds", job.str(), runtimeImageVersion, jobVersion.str(), pauseSecs);
-                                        else
-                                            WARNLOG("Job=%s requeued due to version mismatch (this Thor version=%s, Job version not specified, uses original helm image version=%s). Pausing for %u seconds", job.str(), runtimeImageVersion, baseImageVersion, pauseSecs);
-                                        MilliSleep(pauseSecs*1000);
-                                    }
-                                }
-                                if (runJob)
-                                {
-                                    JobNameScope activeJobName(currentWuid.str());
-                                    saveWuidToFile(currentWuid);
-                                    VStringBuffer msg("Executing: wuid=%s, graph=%s", currentWuid.str(), currentGraphName.str());
-                                    if (platformVersioningAvailable && !streq(baseImageVersion, runtimeImageVersion))
-                                        msg.appendf(" (custom runtime version=%s)", runtimeImageVersion);
-                                    PROGLOG("%s", msg.str());
-
-                                    {
-                                        Owned<IWorkUnit> wu = &workunit->lock();
-                                        publishPodNames(wu, currentGraphName, nullptr);
-                                    }
-                                    SocketEndpoint dummyAgentEp;
-                                    jobManager->execute(workunit, currentWuid, currentGraphName, dummyAgentEp);
-
-                                    Owned<IWorkUnit> w = &workunit->lock();
-
-                                    if (jobManager->queryExitException())
-                                    {
-                                        // NB: exitException has already been relayed.
-                                        jobManager->clearExitException();
-                                    }
-                                    else
-                                    {
-                                        switch (w->getState())
-                                        {
-                                            case WUStateRunning:
-                                                w->setState(WUStateWait);
-                                                break;
-                                            case WUStateAborting:
-                                            case WUStateAborted:
-                                            case WUStateFailed:
-                                                break;
-                                            default:
-                                                w->setState(WUStateFailed);
-                                                break;
-                                        }
-                                    }
-                                    saveWuidToFile(""); // clear wuid file. Signifies that no wuid is running.
-                                    lingerTimer.reset(lingerPeriod);
-                                }
-                            }
-                        }
-                    }
-
-                    currentGraphName.clear();
                     unsigned lingerRemaining;
                     if (lingerTimer.timedout(&lingerRemaining))
                         break;
-                    PROGLOG("Lingering time left: %.2f", ((float)lingerRemaining)/1000);
+                    PROGLOG("Waiting for job, time remaining: %.2f secs", ((float)lingerRemaining)/1000);
 
-                    StringBuffer nextJob;
+                    StringBuffer currentWfId, currentWuid, currentGraphName;
                     CCycleTimer waitTimer;
-                    unsigned __int64 priority = disableQueuePriority ? 0 : getTimeStampNowValue();
+                    unsigned __int64 priority = getTimeStampNowValue();
                     do
                     {
                         StringBuffer wuid;
-                        int ret = recvNextGraph(lingerRemaining, currentWuid.str(), currentWfId, wuid, currentGraphName, priority);
+                        int ret = recvNextGraph(lingerRemaining, currentWfId, wuid, currentGraphName, priority);
                         if (ret > 0)
                         {
                             currentWuid.set(wuid);
@@ -1640,6 +1503,97 @@ void thorMain(ILogMsgHandler *logHandler, const char *wuid, const char *graphNam
                     }
 
                     recordGlobalMetrics("Queue", { {"component", "thor" }, { "name", thorname } }, { StNumAccepts, StNumWaits, StTimeWaitSuccess, StCostWait }, { 1, 1, waitTimeNs, costWait });
+
+                    // Process dequeued job
+                    {
+                        Owned<IWorkUnitFactory> factory;
+                        Owned<IConstWorkUnit> workunit;
+                        factory.setown(getWorkUnitFactory());
+                        workunit.setown(factory->openWorkUnit(currentWuid));
+                        if (!workunit)
+                        {
+                            IWARNLOG("Discarding unknown wuid: wuid=%s, graph=%s", currentWuid.str(), currentGraphName.str());
+                            continue;
+                        }
+
+                        SessionId agentSessionID = workunit->getAgentSession();
+                        if (agentSessionID <= 0)
+                        {
+                            IWARNLOG("Discarding job with invalid sessionID: wuid=%s, graph=%s (sessionID=%" I64F "d)", currentWuid.str(), currentGraphName.str(), agentSessionID);
+                            continue;
+                        }
+                        else if (querySessionManager().sessionStopped(agentSessionID, 0))
+                        {
+                            IWARNLOG("Discarding agentless job: wuid=%s, graph=%s", currentWuid.str(), currentGraphName.str());
+                            continue;
+                        }
+
+                        {
+                            bool unsupported = false;
+                            if (workunit->hasDebugValue("platformVersion"))
+                            {
+                                Owned<IException> e = makeStringException(0, "The #option 'platformVersion' is no longer supported as a per-workunit option");
+                                reportExceptionToWorkunit(*workunit, e);
+                                unsupported = true;
+                            }
+                            if (workunit->hasDebugValue("numWorkersPerPod"))
+                            {
+                                Owned<IException> e = makeStringException(0, "The #option 'numWorkersPerPod' is no longer supported as a per-workunit option");
+                                reportExceptionToWorkunit(*workunit, e);
+                                unsupported = true;
+                            }
+                            if (unsupported)
+                            {
+                                Owned<IWorkUnit> wu = &workunit->lock();
+                                wu->setState(WUStateFailed);
+                                continue;
+                            }
+                        }
+                        {
+                            unsigned wfid = atoi(currentWfId.str());
+                            JobNameScope activeJobName(currentWuid.str());
+                            saveWuidToFile(currentWuid);
+                            PROGLOG("Executing: wuid=%s, graph=%s", currentWuid.str(), currentGraphName.str());
+
+                            {
+                                Owned<IWorkUnit> wu = &workunit->lock();
+                                StringBuffer scopestr;
+                                scopestr.append(WorkflowScopePrefix).append(wfid).append(":").append(currentGraphName);
+                                StatisticScopeType scopeType = getScopeType(currentGraphName);
+                                wu->setStatistic(queryStatisticsComponentType(), queryStatisticsComponentName(), scopeType, scopestr, StWhenK8sStarted, NULL, k8sStartedTs, 1, 0, StatsMergeAppend);
+                                wu->setStatistic(queryStatisticsComponentType(), queryStatisticsComponentName(), scopeType, scopestr, StWhenK8sReady, NULL, k8sReadyTs, 1, 0, StatsMergeAppend);
+                                publishPodNames(wu, currentGraphName, nullptr);
+                            }
+                            SocketEndpoint dummyAgentEp;
+                            jobManager->execute(workunit, currentWuid, currentGraphName, dummyAgentEp);
+
+                            Owned<IWorkUnit> w = &workunit->lock();
+
+                            if (jobManager->queryExitException())
+                            {
+                                // NB: exitException has already been relayed.
+                                jobManager->clearExitException();
+                            }
+                            else
+                            {
+                                switch (w->getState())
+                                {
+                                    case WUStateRunning:
+                                        w->setState(WUStateWait);
+                                        break;
+                                    case WUStateAborting:
+                                    case WUStateAborted:
+                                    case WUStateFailed:
+                                        break;
+                                    default:
+                                        w->setState(WUStateFailed);
+                                        break;
+                                }
+                            }
+                            saveWuidToFile(""); // clear wuid file. Signifies that no wuid is running.
+                            lingerTimer.reset(lingerPeriod);
+                        }
+                    }
                 }
                 thorQueue.clear();
             }
