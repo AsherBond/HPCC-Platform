@@ -66,7 +66,7 @@ const useStyles = makeStyles({
     jobRight: {
         display: "flex",
         alignItems: "center",
-        columnGap: "2px",
+        columnGap: tokens.spacingHorizontalXXS,
         flex: "0 0 auto"
     },
     jobWuid: {
@@ -86,7 +86,6 @@ const useStyles = makeStyles({
     muted: {
         color: tokens.colorNeutralForeground3
     },
-
 });
 
 export type UIWorkunit = {
@@ -223,12 +222,16 @@ const ActiveWorkunit: React.FunctionComponent<ActiveWorkunitProps> = ({ wu, idx,
                 <div className={styles.jobRow}>
                     {wimg && <img className={styles.jobIcon} alt="state" src={wimg} />}
                     <div className={styles.jobTexts}>
-                        <Link className={styles.jobWuid} href={wu.isDFU ? `#/dfuworkunits/${wuid}` : `#/workunits/${wuid}`} aria-label={jobName ? `${jobName} workunit ${wuid}` : wuid}>{jobName ? `${jobName} (${wuid})` : wuid}</Link>
+                        <Link className={styles.jobWuid} href={wu.isDFU ? `#/dfuworkunits/${wuid}` : `#/workunits/${wuid}`} aria-label={jobName ? `${jobName} workunit ${wuid}` : wuid}>
+                            {jobName ? `${jobName} (${wuid})` : wuid}
+                        </Link>
                     </div>
                     <div className={styles.jobRight}>
-                        <Link className={styles.jobName} href={`#/workunits/${wuid}/metrics/${graphName}`}>
-                            {gid ? `${graphName}-${gid}` : graphName}
-                        </Link>
+                        {graphName && (
+                            <Link className={styles.jobName} href={`#/workunits/${wuid}/metrics/${graphName}`}>
+                                {gid ? `${graphName}-${gid}` : graphName}
+                            </Link>
+                        )}
                         {priorityIcon && <img className={styles.jobIcon} alt="priority" src={priorityIcon} />}
                         <Button
                             appearance="transparent"
@@ -428,10 +431,12 @@ export const QueueCard: React.FunctionComponent<QueueCardProps> = ({
 
 export interface QueueCardsProps {
     refreshToken?: number;
+    listMode?: boolean;
 }
 
 export const QueueCards: React.FunctionComponent<QueueCardsProps> = ({
-    refreshToken
+    refreshToken,
+    listMode = false
 }) => {
     const { queues, refresh, pause, resume, clear, setPriority, moveTop, moveUp, moveDown, moveBottom, wuPause, wuResume } = useServerJobQueues();
 
@@ -451,7 +456,7 @@ export const QueueCards: React.FunctionComponent<QueueCardsProps> = ({
         window.location.href = url;
     }, []);
 
-    return <CardGroup>
+    return <CardGroup listMode={listMode}>
         {queues.length === 0 ? (
             <Text>{nlsHPCC.FetchingData}</Text>
         ) : (
