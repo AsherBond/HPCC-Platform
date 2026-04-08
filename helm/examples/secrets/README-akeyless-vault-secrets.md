@@ -2,7 +2,7 @@
 
 This example demonstrates HPCC use of Akeyless Vault for managing secrets using access key authentication.
 
-This example assumes you are starting from a linux command shell in the HPCC-Platform/helm directory.  From there you will find the example files and this README file in the examples/secrets directory.
+This example assumes you are starting from a Linux command shell in the HPCC-Platform/helm directory.  From there you will find the example files and this README file in the examples/secrets directory.
 
 ## Akeyless Vault support
 
@@ -70,7 +70,7 @@ The following properties are used to configure an Akeyless vault entry:
 | `namespace` | No | Path prefix prepended to all secret names (e.g. `hpcc/eclUser/`) |
 | `verify_server` | No | Enable TLS server certificate verification (default: `true`, set to `false` for testing) |
 
-**Note:** Do not set `kind` for Akeyless vaults.  When `type` is set to `akeyless`, the kind is automatically derived as `akeyless_v2`.
+**Note:** It is not necessary to set `kind` for Akeyless vaults.  When `type` is set to `akeyless`, the `kind` is automatically derived as `akeyless_v2`.
 
 ### Authentication methods
 
@@ -266,7 +266,7 @@ kubectl get pods
 
 If you don't already have the HPCC client tools installed please install them now:
 
-https://hpccsystems.com/download#HPCC-Platform
+https://hpccsystems.com/download
 
 ## Using the created 'eclUser' category secrets directly in ECL code
 
@@ -311,16 +311,148 @@ For each job the expected result would be:
 | Aspect | Hashicorp Vault | Akeyless Vault |
 |---|---|---|
 | Configuration property | `kind: kv-v2` | `type: akeyless` |
-| URL format | Includes full path with `${secret}` placeholder | Base API URL only (e.g. `https://api.akeyless.io`) |
+| URL format | Includes full path with `${secret}` placeholder | Base API URL only (e.g., `https://api.akeyless.io`) |
 | Authentication | appRole, Kubernetes, client cert, or token | Access key (access ID + access key) |
 | Secret retrieval | HTTP GET to vault path | HTTP POST to `/get-secret-value` endpoint |
 | Credential rotation | Depends on auth method | Via `client-secret` Kubernetes secret |
 | Namespace handling | Prepended as-is | Leading slashes stripped, then prepended |
 
+## Using Akeyless HVP Gateway (HashiCorp Vault Protocol Compatibility)
+
+The Akeyless HVP (HashiCorp Vault Protocol) Gateway provides a compatibility layer that allows you to use Akeyless as a drop-in replacement for HashiCorp Vault while keeping your existing vault configuration structure. This approach is useful when you want to minimize configuration changes and leverage your existing Hashicorp Vault setup patterns.
+
+### How the HVP Gateway works
+
+The HVP Gateway translates HashiCorp Vault API requests to Akeyless API calls. Instead of rewriting your entire vault configuration, you update a few key attributes to point to the HVP Gateway endpoint and provide Akeyless credentials.
+
+### Reconfiguring Hashicorp Vault to use Akeyless HVP Gateway
+
+#### YAML configuration (Helm)
+
+Update your Hashicorp Vault definitions to use the HVP Gateway:
+
+**Before (Hashicorp Vault):**
+
+```yaml
+vaults:
+  ecl:
+    - name: my-vault
+      kind: kv-v2
+      url: https://vault.example.com/v1/<vault-engine>/data/${secret}
+      appRoleId: 12345678-1234-1234-1234-123456789012
+      appRoleSecret: vault-approle-secret
+      namespace: original/team-a/prod/eclusers
+```
+
+**After (Akeyless HVP Gateway):**
+
+```yaml
+vaults:
+  ecl:
+    - name: my-vault
+      kind: kv-v2
+      url: https://hvp.akeyless.io/v1/secret/data/path/to/akeyless/key-storage/${secret}
+      appRoleId: p-xxxxxx
+      appRoleSecret: vault-approle-secret
+```
+
+#### XML configuration (bare-metal / VM)
+
+Update your environment.xml to use the HVP Gateway:
+
+**Before (Hashicorp Vault):**
+
+```xml
+<vaults>
+  <ecl name="my-vault"
+       kind="kv-v2"
+    url="https://vault.example.com/v1/<vault-engine>/data/${secret}"
+       appRoleId="12345678-1234-1234-1234-123456789012"
+       appRoleSecret="vault-approle-secret"
+    namespace="original/team-a/prod/eclusers"/>
+</vaults>
+```
+
+**After (Akeyless HVP Gateway):**
+
+```xml
+<vaults>
+  <ecl name="my-vault"
+       kind="kv-v2"
+  url="https://hvp.akeyless.io/v1/secret/data/path/to/akeyless/key-storage/${secret}"
+       appRoleId="p-xxxxxx"
+       appRoleSecret="vault-approle-secret"/>
+</vaults>
+```
+
+### URL transformation rules
+
+When migrating to HVP Gateway, transform your URL as follows:
+
+1. **Replace the hostname and path** with the HVP Gateway base URL: `https://hvp.akeyless.io/v1/secret/data/`
+2. **Append the Akeyless secret path** (path to the key in Akeyless)
+3. **Append the `${secret}` placeholder**
+
+The Akeyless secret path used in the HVP URL may not match the original Vault `namespace` value. Use the actual path where the key is stored in Akeyless.
+
+**Example:**
+
+- Original Hashicorp URL: `https://vault.example.com/v1/someengine/data/${secret}`
+- Original namespace: `original/team-a/prod/eclusers`
+- Akeyless key path: `path/to/akeyless/key-storage`
+- HVP Gateway URL: `https://hvp.akeyless.io/v1/secret/data/path/to/akeyless/key-storage/${secret}`
+
+### Configuration changes required
+
+| Attribute | Change | Notes |
+|---|---|---|
+| `url` | Update to HVP Gateway URL | See URL transformation rules above |
+| `appRoleId` | Replace Vault UUID with Akeyless Access ID | For example: `p-xxxxxx` instead of `12345678-1234-1234-1234-123456789012` |
+| `kind` | Ensure it is `kv-v2` (with hyphen) | Change `kv_v2` (underscore) to `kv-v2` if needed |
+| `namespace` | **Remove entirely** | Replace it with the Akeyless key path embedded in the URL; this path may differ from the original namespace value |
+| `appRoleSecret` | Keep the same name | But update the secret's `secret-id` key to contain the Akeyless Access Key (see below) |
+
+### Updating the Kubernetes Secret
+
+If using `appRoleSecret` in a Kubernetes environment, update the secret to contain the Akeyless Access Key:
+
+```bash
+# Delete the old secret if it contains Vault credentials
+kubectl delete secret vault-approle-secret
+
+# Create a new secret with Akeyless Access Key
+kubectl create secret generic vault-approle-secret --from-literal=secret-id=<your-akeyless-access-key>
+```
+
+For bare-metal/VM deployments, store the Akeyless Access Key in your secure credential store and ensure it's accessible to the HPCC components via the `appRoleSecret` reference.
+
+### Advantages of using HVP Gateway
+
+- **Minimal configuration changes** — Keep your existing vault structure and only update a few key fields
+- **Credential migration** — Transition from Vault credentials to Akeyless credentials without restructuring
+- **Compatibility** — Use Akeyless while maintaining Vault-like configuration patterns
+
+### Testing the HVP Gateway migration
+
+After updating your configuration:
+
+1. Deploy the updated HPCC configuration
+2. Check logs for authentication errors (should show Akeyless API responses, not Vault)
+3. Verify secrets are retrieved correctly by running an ECL test job:
+
+```bash
+ecl run hthor examples/secrets/crypto_vault_secret.ecl
+```
+
+If you encounter issues, review the [Troubleshooting](#troubleshooting) section below.
+
+--------------------------------------------------------------------------------------------------------
+
 ## Troubleshooting
 
 - **"missing accessId for akeyless auth"** — The `accessId` property is missing or empty in the vault configuration.
 - **"missing accessKey or client-secret for akeyless auth"** — Neither `accessKey` nor `client-secret` was provided.  One of the two is required.
-- **Authentication failures (401/403)** — Verify that the access ID and access key are correct.  If using `client-secret`, verify the Kubernetes secret contains an `access-key` key with the correct value.
+- **"appRole secret <name> not found" or "appRole secret id not found at '<name>/secret-id'"** — When using the Akeyless HVP Gateway with Hashicorp AppRole-style configuration, ensure the secret referenced by `appRoleSecret` exists and its `secret-id` value is set to the Akeyless Access Key.  Keep the same secret name, but replace the previous Vault secret-id value with the Akeyless Access Key.
+- **Authentication failures (401/403)** — Verify that the access ID and access key are correct.  If using `client-secret`, verify the Kubernetes secret contains an `access-key` key with the correct value.  If using HVP with AppRole-style configuration, verify the secret referenced by `appRoleSecret` exists and that its `secret-id` value contains the Akeyless Access Key.
 - **Secret not found (404)** — Verify that the full secret path (namespace + secret name) matches the path in Akeyless.  Check for leading slash mismatches.
 - **Connection errors** — Verify the `url` is correct and reachable from within the cluster.  If using `verify_server: false`, ensure this is intentional (testing only).

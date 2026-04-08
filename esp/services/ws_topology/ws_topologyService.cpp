@@ -655,8 +655,9 @@ bool CWsTopologyEx::readLastLogDateTime(const char *logName, IFileIO* rIO, size3
             break;
 
         previousPartialLine.clear().append(partialLineEndPtr - contentBuffer.str(), contentBuffer.str());
-        readFrom -= readSize;
-        if (readFrom < 0)
+        if ( readSize < readFrom)
+            readFrom -= readSize;
+        else
             readFrom = 0;
     }
     return false;
@@ -2131,3 +2132,32 @@ bool CWsTopologyEx::onTpComponentConfiguration(IEspContext &context, IEspTpCompo
     }
     return true;
 }
+
+#ifdef _USE_CPPUNIT
+#include "unittests.hpp"
+
+class WsTopologyTests : public CppUnit::TestFixture
+{
+    CPPUNIT_TEST_SUITE(WsTopologyTests);
+    CPPUNIT_TEST(testReadLastLogDateTime_Underflow);
+    CPPUNIT_TEST_SUITE_END();
+
+public:
+    void testReadLastLogDateTime_Underflow()
+    {
+        const char *logname = "in_memory_mocked_log_file";
+        StringBuffer filebuf;
+        filebuf.appendN(100, 'X');
+        OwnedIFileIO memIO = createIFileI(filebuf.length(), filebuf.str());
+        CWsTopologyEx topologyService;
+        ReadLog readLogReq;
+        readLogReq.ltBytes = 1;
+        readLogReq.logfields = MSGFIELD_LEGACY;
+        CDateTime latestLogTime;
+        topologyService.readLastLogDateTime(logname, memIO, 100, 80, readLogReq, latestLogTime);
+    }
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION(WsTopologyTests);
+CPPUNIT_TEST_SUITE_NAMED_REGISTRATION(WsTopologyTests, "WsTopologyTests");
+#endif

@@ -117,6 +117,7 @@ void usage(const char *exe)
   printf("  wuidcompress <wildcard> <type>  --  scan workunits that match <wildcard> and compress resources of <type>\n");
   printf("  wuiddecompress <wildcard> <type> --  scan workunits that match <wildcard> and decompress resources of <type>\n");
   printf("  xmlsize <filename> [<percentage>] --  analyse size usage in xml file, display individual items above 'percentage' \n");
+  printf("  checkdelta <filename>           --  test if a delta file's CRC matches its content\n");
   printf("\n");
   printf("Common options\n");
   printf("  server=<dali-server-ip>         -- server ip\n");
@@ -220,6 +221,11 @@ int main(int argc, const char* argv[])
                 {
                     CHECKPARAMS(1,2);
                     xmlSize(params.item(1), np>1?atof(params.item(2)):1.0);
+                }
+                else if (strieq(cmd, "checkdelta"))
+                {
+                    CHECKPARAMS(1,1);
+                    checkDelta(params.item(1));
                 }
                 else if (strieq(cmd,"translatetoxpath"))
                 {

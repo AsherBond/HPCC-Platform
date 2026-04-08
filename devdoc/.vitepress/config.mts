@@ -1,5 +1,4 @@
 import { defineConfig } from "vitepress";
-import { observable } from "@hpcc-js/markdown-it-plugins";
 import { eclLang } from "@hpcc-js/markdown-it-plugins/ecl-lang";
 
 // https://vitepress.dev/reference/site-config
@@ -10,7 +9,7 @@ export default async () => {
         description: 'The HPCC-Platform from hpccsystems is an open source system for big data analysis. It uses a single language, platform and architecture to process data efficiently and fast.',
         base: '/HPCC-Platform/',
         srcDir: '..',
-        srcExclude: [".*/**", "build-*/**", "build/**", "docs/blogs/**", "node_modules/**", "third-party/**","vcpkg/*/**"],
+        srcExclude: [".*/**", "build-*/**", "build/**", "docs/blogs/**", "node_modules/**", "third-party/**", "vcpkg/*/**"],
         ignoreDeadLinks: true,
 
         themeConfig: {
@@ -70,11 +69,6 @@ export default async () => {
             }
         },
         markdown: {
-            // https://github.com/vuejs/vitepress/blob/main/src/node/markdown/markdown.ts
-            config: md => {
-                md.use(observable, { vitePress: true });
-            },
-
             languages: [eclLang()],
         }
     });

@@ -252,9 +252,40 @@ public:
     virtual IFile * createIFile(const RemoteFilename & filename)
     {
         SocketEndpoint ep = filename.queryEndpoint();
-
         bool noport = (ep.port==0);
         setDafsEndpointPort(ep);
+
+        // Check NAS filters FIRST (before any local/remote determination)
+        // NAS filters redirect what appears to be a remote file to a local path via NAS mount
+        // This must happen before other checks to ensure NAS mappings are always consulted
+#ifdef __linux__
+#ifndef USE_SAMBA
+        if (noport && filters.ordinality())
+        {
+            ForEachItemIn(sn, filters)
+            {
+                CDaliServixFilter &filter = filters.item(sn);
+                if (filter.testEp(ep))
+                {
+                    StringBuffer lPath;
+                    filename.getLocalPath(lPath);
+                    if (filter.testPath(lPath.str()))
+                    {
+                        if (filter.queryTrace())
+                        {
+                            StringBuffer fromPath;
+                            filename.getRemotePath(fromPath);
+                            PROGLOG("Redirecting path: '%s' to '%s'", fromPath.str(), lPath.str());
+                        }
+                        return ::createIFile(lPath.str());
+                    }
+                }
+            }
+        }
+#endif
+#endif
+
+        // Now check if we need remote file access via dafilesrv
         if (!filename.isLocal()||(ep.port!=DAFILESRV_PORT && ep.port!=SECURE_DAFILESRV_PORT)) // assume standard port is running on local machine
         {
             // check 1st if this is a secret based url
@@ -265,28 +296,6 @@ public:
 
 #ifdef __linux__
 #ifndef USE_SAMBA
-            if (noport && filters.ordinality())
-            {
-                ForEachItemIn(sn, filters)
-                {
-                    CDaliServixFilter &filter = filters.item(sn);
-                    if (filter.testEp(ep))
-                    {
-                        StringBuffer lPath;
-                        filename.getLocalPath(lPath);
-                        if (filter.testPath(lPath.str()))
-                        {
-                            if (filter.queryTrace())
-                            {
-                                StringBuffer fromPath;
-                                filename.getRemotePath(fromPath);
-                                PROGLOG("Redirecting path: '%s' to '%s", fromPath.str(), lPath.str());
-                            }
-                            return ::createIFile(lPath.str());
-                        }
-                    }
-                }
-            }
             return createDaliServixFile(filename);
 #endif
 #else

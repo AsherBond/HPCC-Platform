@@ -179,42 +179,13 @@ void setCanAccessDirectly(RemoteFilename & file)
     setCanAccessDirectly(file,canAccessFilesDirectly(file));
 }
 
-class CDaliEnvIntercept: public CInterface, implements IRemoteFileCreateHook
-{
-    bool active;
-    CriticalSection crit;
-public:
-    IMPLEMENT_IINTERFACE;
-    CDaliEnvIntercept() { active = false; }
-    virtual IFile * createIFile(const RemoteFilename & filename)
-    {
-        CriticalBlock block(crit);
-        if (active||!daliClientActive())
-            return NULL;
-        active = true;
-        IFile * ret;
-        if (canAccessFilesDirectly(filename)) 
-            ret = NULL;
-        else 
-            ret = createDaliServixFile(filename);   
-        active = false;
-        return ret;
-    }   
-} *DaliEnvIntercept;
-
-
-
 MODULE_INIT(INIT_PRIORITY_ENV_DALIENV)
 {
-    DaliEnvIntercept = new CDaliEnvIntercept;
-    addIFileCreateHook(DaliEnvIntercept);
     return true;
 }
 
 MODULE_EXIT()
 {
-    removeIFileCreateHook(DaliEnvIntercept);
-    ::Release(DaliEnvIntercept);
     delete ipToOsCache;
     ipToOsCache = NULL;
 }

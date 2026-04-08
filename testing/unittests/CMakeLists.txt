@@ -52,6 +52,7 @@ set (    SRCS
          wutests.cpp
          socketasynctests.cpp
          multishotaccepttests.cpp
+         infocachereadertests.cpp
          ${HPCC_SOURCE_DIR}/esp/bindings/SOAP/xpp/fxpp/FragmentedXmlPullParser.cpp
          ${HPCC_SOURCE_DIR}/esp/bindings/SOAP/xpp/fxpp/FragmentedXmlAssistant.cpp
          ${CMAKE_BINARY_DIR}/generated/ws_loggingservice_esp.cpp
@@ -99,8 +100,10 @@ include_directories (
          ${HPCC_SOURCE_DIR}/rtl/eclrtl
          ${HPCC_SOURCE_DIR}/rtl/include
          ${HPCC_SOURCE_DIR}/common/dllserver
+         ${HPCC_SOURCE_DIR}/common/environment
          ${HPCC_SOURCE_DIR}/common/eventconsumption
          ${HPCC_SOURCE_DIR}/common/workunit
+         ${HPCC_SOURCE_DIR}/dali/sasha
          ${HPCC_SOURCE_DIR}/ecl/hql
          ${HPCC_SOURCE_DIR}/ecl/schemasniffer
          ${HPCC_SOURCE_DIR}/esp/bindings
@@ -112,6 +115,7 @@ include_directories (
          ${HPCC_SOURCE_DIR}/esp/logging/loggingmanager
          ${HPCC_SOURCE_DIR}/esp/platform
          ${HPCC_SOURCE_DIR}/esp/services/common
+         ${HPCC_SOURCE_DIR}/esp/smc/SMCLib
          ${HPCC_SOURCE_DIR}/tools/hidl
          ${HPCC_SOURCE_DIR}/tools/esp-api
          ${CMAKE_BINARY_DIR}/generated
@@ -137,6 +141,7 @@ target_link_libraries ( unittests
          logginglib
          workunit
          eventconsumption
+         SMCLib
          ${CppUnit_LIBRARIES}
     )
 
