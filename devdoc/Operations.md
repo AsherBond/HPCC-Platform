@@ -148,6 +148,8 @@ Step-by-step instructions for configuring and testing HPCC Systems platform auth
 
 Best practices for managing secrets securely within the system.
 
+- [Akeyless Secrets](../helm/examples/secrets/README-akeyless-vault-secrets.md) Covers HPCC use of Akeyless Vault for managing secrets using access key authentication.
+
 - [Kubernetes Secrets](../helm/examples/secrets/README-kubernetessecrets.md)
 
 - [Vault Secrets K8s Authentication](../helm/examples/secrets/README-vault_secrets_using_kubernetes_authentication.md)
