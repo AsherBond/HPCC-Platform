@@ -6175,7 +6175,7 @@ CCovenSDSManager::CCovenSDSManager(ICoven &_coven, const char *_dataPath, const 
     clientProps->setPropBool("@serverIterAvailable", true);
     clientProps->setPropBool("@useAppendOpt", true);
     clientProps->setPropBool("@serverGetIdsAvailable", true);
-    bool saveBinary = config->getPropBool("@saveBinary", isDebugBuild());
+    bool saveBinary = config->getPropBool("@saveBinary", true);
     clientProps->setPropBool("@saveBinary", saveBinary);
     bool saveAsync = config->getPropBool("@saveAsync", true);
     clientProps->setPropBool("@saveAsync", saveAsync);
