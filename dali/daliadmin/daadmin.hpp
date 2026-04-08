@@ -30,6 +30,7 @@ extern DALIADMIN_API void setDaliConnectTimeoutMs(unsigned timeoutMs);
 extern DALIADMIN_API void xmlSize(const char *filename, double pc);
 extern DALIADMIN_API void loadXMLTest(const char *filename, bool parseOnly, bool useLowMemPTree, bool saveFormattedXML, bool freePTree);
 extern DALIADMIN_API void translateToXpath(const char *logicalfile, DfsXmlBranchKind tailType = DXB_File);
+extern DALIADMIN_API void checkDelta(const char *filename);
 
 extern DALIADMIN_API void exportToFile(const char *path, const char *filename, bool safe = false);
 extern DALIADMIN_API bool exportToXML(const char *path, StringBuffer &out, bool safe = false);
