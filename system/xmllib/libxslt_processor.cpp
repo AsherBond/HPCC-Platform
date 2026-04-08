@@ -44,8 +44,6 @@ namespace
 {
 std::once_flag xmlLibraryInitFlag;
 
-constexpr int hpccXmlParseOptions = XML_PARSE_NOENT | XML_PARSE_DTDLOAD;
-
 xmlDocPtr readXmlMemoryWithOptions(const char *buffer, int size, const char *url, xmlDictPtr dict, int options)
 {
     xmlParserCtxtPtr context = xmlNewParserCtxt();
@@ -272,9 +270,9 @@ xmlDocPtr CLibXmlSource::getParsedXml()
         try
         {
             if (srcType == IO_TYPE_FILE)
-                parsedXml = xmlReadFile(filename.get(), NULL, hpccXmlParseOptions);
+                parsedXml = xmlReadFile(filename.get(), NULL, 0);
             else if (srcType == IO_TYPE_BUFFER)
-                parsedXml = xmlReadMemory(text.get(), text.length(), "source.xml", NULL, hpccXmlParseOptions);
+                parsedXml = xmlReadMemory(text.get(), text.length(), "source.xml", NULL, 0);
         }
         catch(...)
         {

@@ -632,16 +632,26 @@ public:
     virtual void addXmlContent(const char *xml) override
     {
         xmlNodePtr location = m_xpathContext->node;
-        xmlParserCtxtPtr parserCtx = xmlCreateDocParserCtxt((const xmlChar *)xml);
-        if (!parserCtx)
-            throw MakeStringException(-1, "CLibXpathContext:addXmlContent: Unable to parse xml");
-        parserCtx->node = location;
-        xmlParseDocument(parserCtx);
-        int wellFormed = parserCtx->wellFormed;
-        xmlFreeDoc(parserCtx->myDoc); //dummy document
-        xmlFreeParserCtxt(parserCtx);
-        if (!wellFormed)
-            throw MakeStringException(-1, "XpathContext:addXmlContent: Unable to parse %s XML content", xml);
+        if (!location)
+            return;
+
+        xmlDocPtr contentDoc = xmlReadMemory(xml, strlen(xml), "addXmlContent", nullptr, 0);
+        if (!contentDoc)
+            throw makeStringExceptionV(-1, "XpathContext:addXmlContent: Unable to parse %s XML content", xml);
+
+        xmlNodePtr contentRoot = xmlDocGetRootElement(contentDoc);
+        if (!contentRoot)
+        {
+            xmlFreeDoc(contentDoc);
+            throw makeStringExceptionV(-1, "XpathContext:addXmlContent: Missing root node for %s XML content", xml);
+        }
+
+        xmlNodePtr contentCopy = xmlDocCopyNode(contentRoot, location->doc, 1);
+        xmlFreeDoc(contentDoc);
+        if (!contentCopy)
+            throw makeStringExceptionV(-1, "XpathContext:addXmlContent: Unable to copy %s XML content", xml);
+
+        xmlAddChild(location, contentCopy);
     }
     virtual IXmlWriter *createXmlWriter() override
     {
@@ -2045,6 +2055,8 @@ class LibXml2XPathProcessorTests : public CppUnit::TestFixture
 {
     CPPUNIT_TEST_SUITE( LibXml2XPathProcessorTests );
         CPPUNIT_TEST(testWriteUTF8);
+        CPPUNIT_TEST(testAddXmlContentWellFormed);
+        CPPUNIT_TEST(testAddXmlContentMalformed);
     CPPUNIT_TEST_SUITE_END();
 
 public:
@@ -2056,6 +2068,42 @@ public:
         if (!checkXmlWriterUtf8("testWriteUTF8", "@an_attribute", R"!!!(contains "quoted" text)!!!"))
             failed = true;
         CPPUNIT_ASSERT(!failed);
+    }
+
+    // Regression tests for HPCC-35881: upgrading to libxml2 2.15.2.
+    // libxml2 2.15+ marks internal xmlParserCtxt struct members (node, wellFormed, myDoc) as
+    // deprecated. The old addXmlContent and setContent implementations accessed these
+    // directly, which violates the encapsulation of the library.
+    //
+    // These tests will verify that addXmlContent uses only public libxml2 APIs as the
+    // API is updated. The setContent function is already excercised in other unittests.
+
+    void testAddXmlContentWellFormed()
+    {
+        // Verify that a well-formed XML fragment is correctly parsed and added as a child
+        // of the current context node.
+        static constexpr const char* section = "content";
+        Owned<ISectionalXmlDocModel> scriptCtx(createScriptContext(section, "<root/>"));
+        Owned<IXpathContext> xpathCtx(createXPathContext(scriptCtx, section));
+
+        xpathCtx->addXmlContent("<child>text</child>");
+
+        StringBuffer result;
+        bool found = xpathCtx->evaluateAsString("child", result);
+        CPPUNIT_ASSERT_MESSAGE("addXmlContent: child node not found after insert", found);
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("addXmlContent: child node content mismatch", std::string("text"), std::string(result.str()));
+    }
+
+    void testAddXmlContentMalformed()
+    {
+        // Verify that a malformed XML fragment causes an exception to be thrown
+        // with an appropriate error message, rather than silently corrupting the tree.
+        static constexpr const char* section = "content";
+        Owned<ISectionalXmlDocModel> scriptCtx(createScriptContext(section, "<root/>"));
+        Owned<IXpathContext> xpathCtx(createXPathContext(scriptCtx, section));
+
+        // Note: libxml2 reports an error for this test directly to stderr, but it is not a failure
+        CPPUNIT_ASSERT_THROWS_IEXCEPTION(xpathCtx->addXmlContent("<child>unclosed"), "addXmlContent: expected exception for malformed XML was not thrown");
     }
 
 private:
