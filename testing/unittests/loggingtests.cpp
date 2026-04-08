@@ -19,7 +19,9 @@
 #include "loggingmanager.hpp"
 #include "modularlogagent.ipp"
 #include "unittests.hpp"
+#include "logconfigptree.hpp"
 #include <vector>
+#include <functional>
 
 using namespace ModularLogAgent;
 
@@ -334,5 +336,85 @@ CPPUNIT_TEST_SUITE_REGISTRATION( LoggingIdFilterTests );
 CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( LoggingIdFilterTests, "loggingidfiltertests" );
 
 
+class LogConfigPTreeTests : public CppUnit::TestFixture
+{
+    CPPUNIT_TEST_SUITE(LogConfigPTreeTests);
+        CPPUNIT_TEST(testIntegralSameSignedness);
+        CPPUNIT_TEST(testIntegralMixedSignedness);
+        CPPUNIT_TEST(testFloat);
+        CPPUNIT_TEST(testMixedIntegralFloat);
+    CPPUNIT_TEST_SUITE_END();
+
+    void expectException(int expectedErrorCode, std::function<void()> func, const char* msg)
+    {
+        try {
+            func();
+            CPPUNIT_FAIL(VStringBuffer("Expected exception %d: %s", expectedErrorCode, msg).str());
+        } catch (IException* e) {
+            CPPUNIT_ASSERT_EQUAL_MESSAGE(msg, expectedErrorCode, e->errorCode());
+            e->Release();
+        }
+    }
+
+public:
+    void testIntegralSameSignedness()
+    {
+        using namespace LogConfigPTree;
+        
+        // INT / INT: In bounds -> no throw
+        applyDefault<int, int>(10, "UNITTEST");
+        applyDefault<int, long long>(10LL, "UNITTEST");
+        
+        // Out of bounds long long -> int (both signed) expects ERROR
+        expectException(999, []{ applyDefault<int, long long>(99999999999999LL, "UNITTEST"); }, "long long > int::max");
+        expectException(999, []{ applyDefault<int, long long>(-99999999999999LL, "UNITTEST"); }, "long long < int::min");
+
+        // UINT / UINT: In bounds -> no throw
+        applyDefault<unsigned, unsigned>(10U, "UNITTEST");
+        
+        // Out of bounds unsigned long long -> unsigned expects ERROR
+        expectException(999, []{ applyDefault<unsigned, unsigned long long>(99999999999999ULL, "UNITTEST"); }, "unsigned long long > unsigned::max");
+    }
+
+    void testIntegralMixedSignedness()
+    {
+        using namespace LogConfigPTree;
+
+        // INT / UINT (Signed value, unsigned default): out of bounds MAX -> ERROR
+        expectException(999, []{ applyDefault<int, unsigned>(0xFFFFFFFFU, "UNITTEST"); }, "unsigned > int::max");
+
+        // UINT / INT (Unsigned value, signed default): out of bounds (<0 or >max) -> WARN
+        expectException(998, []{ applyDefault<unsigned, int>(-1, "UNITTEST"); }, "signed < 0 for unsigned");
+    }
+
+    void testFloat()
+    {
+        using namespace LogConfigPTree;
+
+        // FLOAT / FLOAT: In bounds -> no throw
+        // Added to prevent regression that routes two floats to the integral block
+        // which then fails the bounds check and throws an exception erroneously.
+        applyDefault<float, double>(-1.0, "UNITTEST");
+
+        // These legitimately exceed float bounds -> ERROR
+        expectException(999, []{ applyDefault<float, double>(1e300, "UNITTEST"); }, "double > float::max");
+        expectException(999, []{ applyDefault<float, double>(-1e300, "UNITTEST"); }, "double < lowest float");
+    }
+
+    void testMixedIntegralFloat()
+    {
+        using namespace LogConfigPTree;
+
+        // FLOAT / INT -> WARN
+        expectException(998, []{ applyDefault<float, int>(10, "UNITTEST"); }, "float vs int should WARN (998)");
+
+        // INT / FLOAT -> WARN
+        expectException(998, []{ applyDefault<int, float>(10.0f, "UNITTEST"); }, "int vs float should WARN (998)");
+    }
+
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION( LogConfigPTreeTests );
+CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( LogConfigPTreeTests, "logconfigptreetests" );
 
 #endif // _USE_CPPUNIT

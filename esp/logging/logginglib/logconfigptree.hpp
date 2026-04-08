@@ -22,6 +22,10 @@
 #include "jstring.hpp"
 #include "tokenserialization.hpp"
 
+#ifdef _USE_CPPUNIT
+#include "jexcept.hpp"
+#endif
+
 namespace LogConfigPTree
 {
     /**
@@ -40,13 +44,17 @@ namespace LogConfigPTree
             msg << "unexpected default value '" << defaultValue << "'";
             if (!isEmptyString(xpath))
                 msg << " for configuration XPath '" << xpath << "'";
+#if defined(_USE_CPPUNIT)
+            if (!isEmptyString(xpath) && streq(xpath, "UNITTEST"))
+                throw makeStringExceptionV(isError ? 999 : 998, "%s", msg.str());
+#endif
             if (isError)
                 IERRLOG("%s", msg.str());
             else
                 IWARNLOG("%s", msg.str());
         };
 
-        if (std::is_integral<value_t>() == std::is_integral<default_t>())
+        if (std::is_integral<value_t>() && std::is_integral<default_t>())
         {
             if (std::is_signed<value_t>() == std::is_signed<default_t>())
             {
