@@ -4777,8 +4777,9 @@ class CommonReaderBase : public CInterface
     Linked<ISimpleReadStream> lstream;
     ISimpleReadStream *stream;
     bool bufOwned, nullTerm;
-    byte *buf, *bufPtr;
+    byte *buf;
     size32_t bufSize, bufRemaining;
+    size32_t bufOffset = 0;
 protected:
     PTreeReaderOptions readerOptions;
     bool ignoreWhiteSpace, noRoot;
@@ -4795,7 +4796,7 @@ private:
     }
     void resetState()
     {
-        bufPtr = buf;
+        bufOffset = 0;
         nextChar = 0;
         if (nullTerm)
             bufRemaining = (size32_t)-1; // Set to the maximum value.  This avoids special casing updating buffer positions
@@ -4860,14 +4861,12 @@ protected:
         assertex(curOffset >= n);
         if (!n) return;
         curOffset -= n;
-        size32_t d = (size32_t)(bufPtr-buf);
-        if (n > d) n = d;
-        bufRemaining += n;
+        if (n > bufOffset) n = bufOffset;
         for (;;)
         {
-            --bufPtr;
+            --bufOffset;
             if (!--n) break;
-            if (10 == *bufPtr) --line;
+            if (10 == buf[bufOffset]) --line;
         }
     }
     bool checkBOM()
@@ -4906,12 +4905,12 @@ protected:
             error("Unsupported utf16 format detected in BOM header", false);
         return false;
     }
-    inline void expecting(const char *str)
+    inline void expecting(const char *str) __attribute__((noreturn))
     {
         StringBuffer errorMsg("Expecting \"");
         error(errorMsg.append(str).append("\"").str());
     }
-    inline void eos()
+    inline void eos() __attribute__((noreturn))
     {
         error("String terminator hit");
     }
@@ -4936,20 +4935,20 @@ protected:
         StringBuffer context;
         if (giveContext)
         {
-            size32_t bufPos = (size32_t)(bufPtr-buf);
+            size32_t bufPos = bufOffset;
             unsigned preLen = std::min(40U, bufPos);
-            size32_t bR = bufRemaining;
+            size32_t bR = bufRemaining - bufOffset;
             if (nullTerm)
             {
                 bR = 0;
                 while (bR<40)
                 {
-                    if ('\0' == bufPtr[bR]) break;
+                    if ('\0' == buf[bufOffset + bR]) break;
                     bR++;
                 }
             }
             unsigned postLen = std::min(80-preLen, bR);
-            const char *bufferContext = (const char *)(bufPtr - preLen);
+            const char *bufferContext = (const char *)(buf + bufOffset - preLen);
             context.append(preLen, bufferContext);
             context.append("*ERROR*");
             context.append(postLen, bufferContext+preLen);
@@ -4978,19 +4977,20 @@ protected:
     inline bool readNextToken()
     {
         // do own buffering, to have reasonable error context.
-        if (unlikely(0 == bufRemaining))
+        if (unlikely(bufOffset >= bufRemaining))
         {
             if (stream)
+            {
                 bufRemaining = stream->read(bufSize, buf);
-            if (!bufRemaining)
+                bufOffset = 0;
+            }
+            if (bufOffset >= bufRemaining)
                 return false;
-            bufPtr = buf;
         }
-        --bufRemaining;
-        nextChar = *bufPtr++;
+        nextChar = buf[bufOffset++];
         if (unlikely((0 == nextChar) && nullTerm))
         {
-            --bufPtr;
+            --bufOffset;
             return false;
         }
         if (10 == nextChar)
@@ -5499,24 +5499,24 @@ restart:
                 expecting("<");
             goto restart;
         }
-        StringBuffer tagName;
         if (ignoreWhiteSpace)
             skipWS();
+        StringBuffer completeTagname;
+        unsigned afterFirstColonOffset = 0;
         while (!isspace(nextChar) && nextChar != '>' && nextChar != '/')
         {
-            tagName.append(nextChar);
+            completeTagname.append(nextChar);
+            if ((nextChar == ':') && (afterFirstColonOffset == 0))
+                afterFirstColonOffset = completeTagname.length();
             readNext();
             if ('<' == nextChar)
                 error("Unmatched close tag encountered");
         }
-        StringBuffer completeTagname(tagName);
+        const char * tagName = completeTagname.str();
         if (ignoreNameSpaces)
-        {
-            const char *colon;
-            if ((colon = strchr(tagName.str(), ':')) != NULL)
-                tagName.remove(0, (size32_t)(colon - tagName.str() + 1));
-        }
-        iEvent->beginNode(tagName.str(), false, startOffset);
+            tagName += afterFirstColonOffset;
+
+        iEvent->beginNode(tagName, false, startOffset);
         skipWS();
         bool endTag = false;
         bool base64 = false;
@@ -5542,21 +5542,11 @@ restart:
             skipWS();
             if (nextChar == '=') readNext(); else expecting("=");
             skipWS();
-            if (nextChar == '"')
+            if ((nextChar == '"') || (nextChar == '\''))
             {
+                char quoteChar = nextChar;
                 readNext();
-                while (nextChar != '"')
-                {
-                    if (!nextChar)
-                        eos();
-                    attrval.append(nextChar);
-                    readNext();
-                }
-            }
-            else if (nextChar == '\'')
-            {
-                readNext();
-                while (nextChar != '\'')
+                while (nextChar != quoteChar)
                 {
                     attrval.append(nextChar);
                     readNext();
@@ -5575,7 +5565,7 @@ restart:
             readNext();
             skipWS();
         }
-        iEvent->beginNodeContent(tagName.str());
+        iEvent->beginNodeContent(tagName);
         StringBuffer tagText;
         bool binary = base64;
         if (!endTag)
@@ -5652,7 +5642,7 @@ restart:
                     expecting(">");
             }
         }
-        iEvent->endNode(tagName.str(), tagText.length(), tagText.str(), binary, curOffset);
+        iEvent->endNode(tagName, tagText.length(), tagText.str(), binary, curOffset);
     }
 };
 
@@ -5874,21 +5864,11 @@ public:
                     skipWS();
                     if (nextChar == '=') readNext(); else expecting("=");
                     skipWS();
-                    if (nextChar == '"')
+                    if ((nextChar == '"') || (nextChar == '\''))
                     {
+                        char quoteChar = nextChar;
                         readNext();
-                        while (nextChar != '"')
-                        {
-                            if (!nextChar)
-                                eos();
-                            attrval.append(nextChar);
-                            readNext();
-                        }
-                    }
-                    else if (nextChar == '\'')
-                    {
-                        readNext();
-                        while (nextChar != '\'')
+                        while (nextChar != quoteChar)
                         {
                             attrval.append(nextChar);
                             readNext();
@@ -7336,9 +7316,7 @@ public:
     typedef CommonReaderBase PARENT;
     using PARENT::reset;
     using PARENT::nextChar;
-    using PARENT::readNextToken;
     using PARENT::checkReadNext;
-    using PARENT::checkStartReadNext;
     using PARENT::readNext;
     using PARENT::expecting;
     using PARENT::match;
