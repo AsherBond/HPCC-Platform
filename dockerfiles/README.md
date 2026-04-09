@@ -105,9 +105,8 @@ Run `./startall.sh -h` for supported flags (including optional Elastic/Prometheu
 These `*.dockerfile` files create “build environment” images that are thin wrappers over prebuilt
 `hpccsystems/platform-build-base-<os>:<vcpkg-ref>` images.
 
-- `ubuntu-20.04.dockerfile`, `ubuntu-22.04.dockerfile`, `ubuntu-24.04.dockerfile`
+- `ubuntu-22.04.dockerfile`, `ubuntu-24.04.dockerfile`
 - `rockylinux-8.dockerfile`
-- `centos-7.dockerfile`
 - `wasm32-emscripten.dockerfile`
 
 They’re used by `build.sh` and `image.sh`.
@@ -117,7 +116,6 @@ They’re used by `build.sh` and `image.sh`.
 These Dockerfiles install runtime dependencies, create the `hpcc` user, and set up the container
 filesystem layout (but do not build HPCC on their own).
 
-- `platform-core-ubuntu-20.04.dockerfile`
 - `platform-core-ubuntu-22.04.dockerfile`
 - `platform-core-ubuntu-24.04.dockerfile`
 - `platform-core-debug-ubuntu-22.04.dockerfile` (adds `gdb` ptrace capability via `setcap`)

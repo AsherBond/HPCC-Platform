@@ -108,9 +108,13 @@ function doBuild() {
         hpccsystems/platform-build-$1:$VCPKG_REF \
         "rm -rf /hpcc-dev/HPCC-Platform/build/$1/CMakeCache.txt /hpcc-dev/HPCC-Platform/build/$1/CMakeFiles && \
         cmake -S /hpcc-dev/HPCC-Platform -B /hpcc-dev/HPCC-Platform/build/$1 -G Ninja -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} ${CMAKE_ALL_OPTIONS} ${CMAKE_OPTIONS_EXTRA} && \
-        cmake --build /hpcc-dev/HPCC-Platform/build/$1 --parallel || \
-        cat /hpcc-dev/vcpkg_buildtrees/detect_compiler/config-x64-linux-dynamic-rel-err.log && \
-        echo 'Done'"
+        if cmake --build /hpcc-dev/HPCC-Platform/build/$1 --parallel; then \
+            echo 'Done'; \
+        else \
+            status=\$?; \
+            cat /hpcc-dev/vcpkg_buildtrees/detect_compiler/config-x64-linux-dynamic-rel-err.log || true; \
+            exit \$status; \
+        fi"
     # docker run -it --mount source="$(pwd)",target=/hpcc-dev/HPCC-Platform,type=bind,consistency=cached build-ubuntu-22.04:latest bash
 
     rm -f $ROOT_DIR/vcpkg/vcpkg 
@@ -127,8 +131,6 @@ else
     doBuild wasm32-emscripten &> $ROOT_DIR/build/docker-logs/wasm32-emscripten.log &
     doBuild ubuntu-24.04 &> $ROOT_DIR/build/docker-logs/ubuntu-24.04.log &
     doBuild ubuntu-22.04 &> $ROOT_DIR/build/docker-logs/ubuntu-22.04.log &
-    doBuild ubuntu-20.04 &> $ROOT_DIR/build/docker-logs/ubuntu-20.04.log &
     doBuild rockylinux-8 &> $ROOT_DIR/build/docker-logs/rockylinux-8.log &
-    doBuild centos-7 &> $ROOT_DIR/build/docker-logs/centos-7.log & 
     wait
 fi

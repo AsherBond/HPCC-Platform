@@ -15,7 +15,13 @@
     limitations under the License.
 ############################################################################## */
 
-#include "opentelemetry/context/propagation/global_propagator.h" // context::propagation::GlobalTextMapPropagator::GetGlobalPropagator
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#endif
+
+#include "opentelemetry/context/propagation/global_propagator.h"  // context::propagation::GlobalTextMapPropagator::GetGlobalPropagator
 #include "opentelemetry/sdk/trace/batch_span_processor_options.h" //opentelemetry::sdk::trace::TracerProviderFactory::Create(context)
 #include "opentelemetry/sdk/trace/tracer_provider_factory.h" //opentelemetry::sdk::trace::TracerProviderFactory::Create(context)
 #include "opentelemetry/sdk/trace/tracer_context.h" //opentelemetry::sdk::trace::TracerContextFactory::Create(std::move(processors));
@@ -36,8 +42,6 @@
 #ifdef USE_OPENTEL_GRPC
 #include "opentelemetry/exporters/otlp/otlp_grpc_exporter.h"
 #include "opentelemetry/exporters/otlp/otlp_grpc_exporter_factory.h"
-#else
-#include <random>
 #endif
 
 #include "opentelemetry/exporters/otlp/otlp_http_exporter_factory.h"
@@ -60,8 +64,10 @@
 #include "jtrace.hpp"
 #include "lnuid.h"
 #include <variant>
+#include <random>
 
-//This seems to be defined in some window builds - avoid conflicts with the functions below
+// These may be defined in some windows builds - avoid conflicts with the functions below
+#undef min
 #undef max
 
 static constexpr const char * NullTraceId   = "00000000000000000000000000000000";

@@ -1,4 +1,5 @@
 #include "jliball.hpp"
+#include <mutex>
 #include <string.h>
 
 #if defined(__clang__) || defined(__GNUC__)
@@ -33,11 +34,47 @@
 #include "xslcache.hpp"
 #include "xmlerror.hpp"
 
-extern int xmlLoadExtDtdDefaultValue;
 xsltDocLoaderFunc originalLibXsltIncludeHandler = NULL;
 
 xmlDocPtr libXsltIncludeHandler(const xmlChar * URI, xmlDictPtr dict, int options, IIncludeHandler* handler, xsltLoadType type);
 xmlDocPtr globalLibXsltIncludeHandler(const xmlChar * URI, xmlDictPtr dict, int options, void *ctx, xsltLoadType type);
+static void libxsltErrorMsgHandler(void *ctx, const char *format, ...) __attribute__((format(printf,2,3)));
+
+namespace
+{
+std::once_flag xmlLibraryInitFlag;
+
+xmlDocPtr readXmlMemoryWithOptions(const char *buffer, int size, const char *url, xmlDictPtr dict, int options)
+{
+    xmlParserCtxtPtr context = xmlNewParserCtxt();
+    if (!context)
+        return NULL;
+
+    if (dict)
+        xmlCtxtSetDict(context, dict);
+
+    xmlDocPtr document = xmlCtxtReadMemory(context, buffer, size, url, NULL, options);
+    xmlFreeParserCtxt(context);
+    return document;
+}
+
+void initializeXmlLibraries()
+{
+    std::call_once(xmlLibraryInitFlag, []()
+    {
+        // libxml2/libxslt initialization is process-global state. Initialize it
+        // once on first use and leave process teardown to the runtime.
+        xmlInitParser();
+
+        xsltMaxDepth = 100000;
+        xsltSetLoaderFunc(NULL);
+        originalLibXsltIncludeHandler = xsltDocDefaultLoader;
+        xsltSetLoaderFunc(globalLibXsltIncludeHandler);
+        exsltRegisterAll();
+        xsltSetGenericErrorFunc(NULL, libxsltErrorMsgHandler);
+    });
+}
+}
 
 void libxsltCustomMessageHandler(StringBuffer& out, const char* in, IXslTransform* transform);
 
@@ -160,7 +197,7 @@ void CLibXsltSource::compile()
                 compiledXslt = parseXsltFile();
             else if (srcType == IO_TYPE_BUFFER)
             {
-                xmlDocPtr xsldoc = xmlReadMemory(text.get(), text.length(), filename.get(), NULL, 0);
+                xmlDocPtr xsldoc = xmlReadMemory(text.get(), text.length(), filename.get(), NULL, XSLT_PARSE_OPTIONS);
                 if (!xsldoc)
                     throw MakeStringException(XSLERR_InvalidSource, "XSLT source contains invalid XML\n");
                 xsldoc->_private=(void*)this;
@@ -233,7 +270,7 @@ xmlDocPtr CLibXmlSource::getParsedXml()
         try
         {
             if (srcType == IO_TYPE_FILE)
-                parsedXml = xmlParseFile(filename.get());
+                parsedXml = xmlReadFile(filename.get(), NULL, 0);
             else if (srcType == IO_TYPE_BUFFER)
                 parsedXml = xmlReadMemory(text.get(), text.length(), "source.xml", NULL, 0);
         }
@@ -577,11 +614,12 @@ int CLibXslTransform::transform(xmlChar **xmlbuff, int &len)
 
     try
     {
-        xsltFreeTransformContext(ctxt);
         xsltSaveResultToString(xmlbuff, &len, res, xsldoc);
+        xsltFreeTransformContext(ctxt);
     }
     catch(...)
     {
+        xsltFreeTransformContext(ctxt);
         xmlFreeDoc(res);
         xmlFree(xmlbuff);
         throw MakeStringException(XSLERR_TransformFailed, "Failed processing libxslt transform output");
@@ -735,23 +773,17 @@ CLibXslProcessor::CLibXslProcessor()
 {
     m_cachetimeout = XSLT_DEFAULT_CACHETIMEOUT;
 
-    xmlInitParser();
-
-    xmlSubstituteEntitiesDefault(1);
-    xmlThrDefSaveNoEmptyTags(1);
-    xmlLoadExtDtdDefaultValue = 1;
-    xsltMaxDepth = 100000;
-    xsltSetLoaderFunc(NULL);
-    originalLibXsltIncludeHandler = xsltDocDefaultLoader;
-    xsltSetLoaderFunc(globalLibXsltIncludeHandler);
-    exsltRegisterAll();
-    xsltSetGenericErrorFunc(NULL, libxsltErrorMsgHandler);
+    initializeXmlLibraries();
 }
 
 CLibXslProcessor::~CLibXslProcessor()
 {
-    xsltCleanupGlobals();
-    xmlCleanupParser();
+    // libxml2 documents xmlCleanupParser() as not thread-safe, says no library
+    // calls may be made after it, and recommends calling it only right before
+    // the whole process exits. It also notes there is generally no need for
+    // manual cleanup when automatic runtime teardown is available. Do not try
+    // to mirror initialization here by tearing down global XML/XSLT state
+    // during static destruction.
 }
 
 static CLibXslProcessor xslProcessor;
@@ -814,7 +846,7 @@ xmlDocPtr libXsltIncludeHandler(const xmlChar * URI, xmlDictPtr dict, int option
     if (mbContainsPath)
         return originalLibXsltIncludeHandler((const xmlChar *)mb.append((char)0).toByteArray(), dict, options, NULL, type);
     if (mb.length())
-        return xmlReadMemory(mb.toByteArray(), mb.length(), (const char *)URI, NULL, 0);
+        return readXmlMemoryWithOptions((const char *)mb.toByteArray(), mb.length(), (const char *)URI, dict, options);
     return NULL;
 }
 

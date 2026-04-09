@@ -104,7 +104,7 @@ jobs:
       actions: write
     strategy:
       matrix:
-        os: [ ubuntu-24.04, ubuntu-22.04, ubuntu-20.04, rockylinux-8 ]
+        os: [ ubuntu-24.04, ubuntu-22.04, rockylinux-8 ]
         container: [ true, false ]
         build-docker-image: [ false ]
         architecture: [ "", "-arm" ]
@@ -116,8 +116,6 @@ jobs:
           - os: rockylinux-8
             container: true
           - os: rockylinux-8
-            architecture: "-arm"
-          - os: ubuntu-20.04
             architecture: "-arm"
       fail-fast: false
     
@@ -138,7 +136,7 @@ jobs:
       actions: write
     strategy:
       matrix:
-        os: [ ubuntu-24.04, ubuntu-22.04, ubuntu-20.04, rockylinux-8, centos-7 ]
+        os: [ ubuntu-24.04, ubuntu-22.04, rockylinux-8 ]
         container: [ true, false ]
         build-docker-image: [ false ]
         architecture: [ "", "-arm" ]
@@ -147,15 +145,9 @@ jobs:
             container: true
             build-docker-image: true
         exclude:
-          - os: centos-7
-            container: true
           - os: rockylinux-8
             container: true
           - os: rockylinux-8
-            architecture: "-arm"
-          - os: ubuntu-20.04
-            architecture: "-arm"
-          - os: centos-7
             architecture: "-arm"
       fail-fast: false
     uses: ./.github/workflows/build-docker-internal.yml
