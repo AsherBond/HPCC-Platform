@@ -190,6 +190,7 @@ private:
     public:
         virtual void configure(const IPropertyTree& config) override;
         virtual bool enabled() const override;
+        virtual void resize(__uint64 newSize) override;
         inline __uint64 getReadTimeIfExists(__uint64 fileId, __uint64 offset) { return getReadTimeIfExists({fileId, offset}); }
         __uint64 getReadTimeIfExists(const IndexHashKey& key);
     protected:
@@ -197,6 +198,7 @@ private:
         virtual const char* description() const override;
     public:
         __uint64 readTime{0};
+        __uint64 priorReadTime{0};
     };
 
     // An ordered set of storage planes, with key transparency enabled.

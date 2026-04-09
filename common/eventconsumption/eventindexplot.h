@@ -49,12 +49,21 @@ protected:
             StringAttr value;
 
             Delta() = default;
-            Delta(const IPropertyTree& delta) : linkId(delta.queryProp("@linkId")), xpath(delta.queryProp("@xpath")), value(delta.queryProp("@value")) {}
+            Delta(const IPropertyTree& delta, const Delta* defaults) : linkId(delta.queryProp("@linkId")), xpath(delta.queryProp("@xpath")), value(delta.queryProp("@value"))
+            {
+                if (xpath.isEmpty() && defaults && !defaults->xpath.isEmpty())
+                {
+                    xpath.set(defaults->xpath);
+                    if (linkId.isEmpty() && !defaults->linkId.isEmpty())
+                        linkId.set(defaults->linkId);
+                }
+            }
         };
         std::vector<Delta> deltas;
+        std::set<std::string> inputPaths;
 
         Iteration() = default;
-        Iteration(const char* name, std::vector<Delta>&& _deltas) : name(name), deltas(std::move(_deltas)) {}
+        Iteration(const char* name, std::vector<Delta>&& _deltas, std::set<std::string>&& _inputPaths) : name(name), deltas(std::move(_deltas)), inputPaths(std::move(_inputPaths)) {}
     };
 
     using Iterations = std::vector<Iteration>;
@@ -100,7 +109,7 @@ protected:
     static ValueSelector parseValueSelector(const char* selector);
     static bool compareLinkIds(const char* linkLinkId, const char* deltaLinkId);
     void configureAxis(Iterations& axis, const IPropertyTree* config);
-    void parseIterations(IPropertyTreeIterator *iterIter, Iterations &iterations);
+    void parseIterations(IPropertyTreeIterator *iterIter, Iterations &iterations, const Iteration::Delta* defaultDelta);
     void validateIterations(const Iterations &iterations, bool isAxis);
     bool doOnePlot(LinkChanges &linkChanges);
     bool doXAxis(LinkChanges& linkChanges, size_t yAxisIdx);
@@ -111,6 +120,7 @@ protected:
 
 protected:
     LinkSpecs links;
+    std::set<std::string> defaultInputPaths;
     Iterations plotIterations;
     Iterations yAxis;
     Iterations xAxis;
@@ -118,4 +128,5 @@ protected:
     size_t cellIdx{0};
     __uint64 cellValue{0};
     std::vector<StringBuffer> nonFatalExceptions;
+    std::set<std::string> savedInputPaths;
 };

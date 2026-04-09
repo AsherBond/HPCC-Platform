@@ -20,7 +20,10 @@
 #include "jptree.hpp"
 #include "jexcept.hpp"
 
+static constexpr const char* operationName = "index.plot";
 static constexpr const char* defaultLinkId = "index-events";
+static constexpr const char* primaryPlotOpSectionName = "operation";
+static constexpr const char* secondaryPlotOpSectionName = "command";
 
 bool CIndexPlotOp::ready() const
 {
@@ -56,33 +59,40 @@ bool CIndexPlotOp::visitEvent(CEvent& event)
     switch (event.queryType())
     {
     case EventIndexLoad:
-        switch (valueSelector)
         {
-        case ValueSelector::ReadTime:
-            cellValue += event.queryNumericValue(EvAttrReadTime);
-            break;
-        case ValueSelector::ExpandTime:
-            cellValue += event.queryNumericValue(EvAttrExpandTime);
-            break;
-        case ValueSelector::ElapsedTime:
-            cellValue += event.queryNumericValue(EvAttrReadTime);
-            cellValue += event.queryNumericValue(EvAttrExpandTime);
-            break;
-        default:
-            break;
+            __uint64 readTime = event.queryNumericValue(EvAttrReadTime);
+            if (readTime)
+            {
+                switch (valueSelector)
+                {
+                case ValueSelector::ReadTime:
+                    cellValue += readTime;
+                    break;
+                case ValueSelector::ExpandTime:
+                    cellValue += event.queryNumericValue(EvAttrExpandTime);
+                    break;
+                case ValueSelector::ElapsedTime:
+                    cellValue += readTime;
+                    cellValue += event.queryNumericValue(EvAttrExpandTime);
+                    break;
+                default:
+                    break;
+                }
+            }
         }
         break;
     case EventIndexPayload:
-        switch (valueSelector)
+        if (event.queryBooleanValue(EvAttrFirstUse))
         {
-        case ValueSelector::ExpandTime:
-            cellValue += event.queryNumericValue(EvAttrExpandTime);
-            break;
-        case ValueSelector::ElapsedTime:
-            cellValue += event.queryNumericValue(EvAttrExpandTime);
-            break;
-        default:
-            break;
+            switch (valueSelector)
+            {
+            case ValueSelector::ExpandTime:
+            case ValueSelector::ElapsedTime:
+                cellValue += event.queryNumericValue(EvAttrExpandTime);
+                break;
+            default:
+                break;
+            }
         }
         break;
     case EventIndexCacheMiss:
@@ -102,7 +112,24 @@ void CIndexPlotOp::departFile(uint32_t bytesRead)
 bool CIndexPlotOp::hasInputPath() const
 {
     // Check if any input paths are available
-    return !inputPaths.empty();
+    if (!defaultInputPaths.empty())
+        return true;
+    for (const Iteration& i : plotIterations)
+    {
+        if (!i.inputPaths.empty())
+            return true;
+    }
+    for (const Iteration& i : xAxis)
+    {
+        if (!i.inputPaths.empty())
+            return true;
+    }
+    for (const Iteration& i : yAxis)
+    {
+        if (!i.inputPaths.empty())
+            return true;
+    }
+    return false;
 }
 
 void CIndexPlotOp::setOpConfig(const IPropertyTree& _config)
@@ -114,28 +141,35 @@ void CIndexPlotOp::setOpConfig(const IPropertyTree& _config)
     yAxis.clear();
     valueSelector = ValueSelector::Unknown;
 
-    // Parse command section (required)
-    IPropertyTree* command = _config.queryPropTree("command");
-    if (!command)
-        throw makeStringException(0, "Missing required 'command' section in configuration");
+    // Parse operation section (required)
+    const IPropertyTree* opConfig = nullptr;
+    if (streq(_config.queryName(), primaryPlotOpSectionName) || streq(_config.queryName(), secondaryPlotOpSectionName))
+        opConfig = &_config;
+    else if (_config.hasProp(primaryPlotOpSectionName))
+        opConfig = _config.queryPropTree(primaryPlotOpSectionName);
+    else if (_config.hasProp(secondaryPlotOpSectionName))
+        opConfig = _config.queryPropTree(secondaryPlotOpSectionName);
+    else
+        throw makeStringExceptionV(0, "Missing required '%s' section in configuration", primaryPlotOpSectionName);
 
-    // Validate command name
-    const char* commandName = command->queryProp("@name");
-    if (!commandName || !strieq(commandName, "index.plot"))
-        throw makeStringException(0, "Invalid or missing command name, expected 'index.plot'");
+    // Validate operation name
+    const char* opName = opConfig->queryProp("@name");
+    if (!opName || !strieq(opName, operationName))
+        throw makeStringExceptionV(0, "Invalid or missing operation name; expected '%s'", operationName);
 
     // Accept input path (conditional)
-    Owned<IPropertyTreeIterator> inputIter = command->getElements("input");
+    Owned<IPropertyTreeIterator> inputIter = opConfig->getElements("input");
     ForEach(*inputIter)
     {
         IPropertyTree& inputSpec = inputIter->query();
         const char* path = inputSpec.queryProp(".");
-        setInputPath(path);
+        defaultInputPaths.insert(path);
     }
-    const char* path = command->queryProp("@input"); // backward compatibility
-    setInputPath(path);
+    const char* path = opConfig->queryProp("@input"); // backward compatibility
+    if (!isEmptyString(path))
+        defaultInputPaths.insert(path);
     // Parse link configurations (required)
-    Owned<IPropertyTreeIterator> linkIter = command->getElements("link");
+    Owned<IPropertyTreeIterator> linkIter = opConfig->getElements("link");
     ForEach(*linkIter)
     {
         IPropertyTree& linkSpec = linkIter->query();
@@ -149,26 +183,26 @@ void CIndexPlotOp::setOpConfig(const IPropertyTree& _config)
         links.emplace_back(id.str(), linkSpec);
     }
     if (links.empty())
-        throw makeStringException(0, "Missing required index-events 'link' section in plot configuration");
+        throw makeStringExceptionV(0, "Missing required 'link' section in %s configuration", opName);
 
     // Parse plot iterations (optional)
-    parseIterations(command->getElements("plot"), plotIterations);
+    parseIterations(opConfig->getElements("plot"), plotIterations, nullptr);
     validateIterations(plotIterations, false);
 
     // Parse x-axis configuration (required)
-    IPropertyTree* xAxisTree = command->queryPropTree("x-axis");
+    IPropertyTree* xAxisTree = opConfig->queryPropTree("x-axis");
     if (!xAxisTree)
-        throw makeStringException(0, "Missing required 'x-axis' section in configuration");
+        throw makeStringExceptionV(0, "Missing required 'x-axis' section in %s configuration", opName);
     configureAxis(xAxis, xAxisTree);
 
     // Parse y-axis configuration (optional)
-    IPropertyTree* yAxisTree = command->queryPropTree("y-axis");
+    IPropertyTree* yAxisTree = opConfig->queryPropTree("y-axis");
     if (yAxisTree)
         configureAxis(yAxis, yAxisTree);
 
-    valueSelector = parseValueSelector(command->queryProp("@valueSelector"));
+    valueSelector = parseValueSelector(opConfig->queryProp("@valueSelector"));
     if (ValueSelector::Unknown == valueSelector)
-        throw makeStringExceptionV(0, "invalid (or missing) plot value selector '%s'", command->queryProp("valueSelector"));
+        throw makeStringExceptionV(0, "invalid (or missing) plot value selector '%s' in %s configuration", opConfig->queryProp("valueSelector"), opName);
 }
 
 CIndexPlotOp::ValueSelector CIndexPlotOp::parseValueSelector(const char* selector)
@@ -206,37 +240,65 @@ void CIndexPlotOp::configureAxis(Iterations& axis, const IPropertyTree* config)
     if (!config)
         return;
 
-    parseIterations(config->getElements("iteration"), axis);
+    Iteration::Delta defaultDelta(*config, nullptr);
+    // The generic axis configuration is an array of iteration elements.
+    parseIterations(config->getElements("iteration"), axis, &defaultDelta);
     if (axis.empty())
     {
-        const char* xpath = config->queryProp("@xpath");
-        const char* minValueString = config->queryProp("@minValue");
-        const char* maxValueString = config->queryProp("@maxValue");
-        const char* stepsString = config->queryProp("@steps");
-        if (isEmptyString(xpath) && isEmptyString(minValueString) && isEmptyString(maxValueString) && isEmptyString(stepsString))
-            throw makeStringException(0, "Missing required 'iteration' or 'xpath' section in axis configuration");
+        if (defaultDelta.xpath.isEmpty())
+            throw makeStringException(0, "Missing required 'iteration' or 'xpath' in axis configuration");
 
-        // MORE: generalize to not assume byte counts
-        __uint64 minValue = strToBytes(minValueString, StrToBytesFlags::ThrowOnError);
-        __uint64 maxValue = strToBytes(maxValueString, StrToBytesFlags::ThrowOnError);
-        __uint64 steps = strtoull(stepsString, nullptr, 0);
-        if (minValue > maxValue)
-            throw makeStringExceptionV(0, "Invalid axis range: %s to %s", minValueString, maxValueString);
-        if (!steps)
-            throw makeStringExceptionV(0, "Invalid axis steps: %s", stepsString);
-        __uint64 stepSize = (maxValue - minValue) / steps;
-        for (__uint64 value = minValue; value <= maxValue; value += stepSize)
+        Owned<IPropertyTreeIterator> values(config->getElements("value"));
+        if (values->first())
         {
-            Iteration& iteration = axis.emplace_back();
-            Iteration::Delta& delta = iteration.deltas.emplace_back();
-            delta.xpath.set(xpath);
-            delta.value.set(VStringBuffer("%" I64F "u", value));
+            // An array of discrete values creates iteration instances pairing the XPath with
+            // each of the values.
+            ForEach(*values)
+            {
+                const char* valueString = values->query().queryProp(".");
+                if (isEmptyString(valueString))
+                    throw makeStringExceptionV(0, "Empty 'value' element paired with XPath '%s'", defaultDelta.xpath.str());
+                __uint64 value = strToBytes(valueString, StrToBytesFlags::ThrowOnError);
+                Iteration& iteration = axis.emplace_back();
+                Iteration::Delta& delta = iteration.deltas.emplace_back();
+                delta.linkId.set(defaultDelta.linkId);
+                delta.xpath.set(defaultDelta.xpath.str());
+                delta.value.set(VStringBuffer("%" I64F "u", value));
+            }
+        }
+        else
+        {
+            // A combination of minimum and maximum values plus a step cointer creates evenly
+            // distributed iteration instances between the min and max values.
+            const char* minValueString = config->queryProp("@minValue");
+            const char* maxValueString = config->queryProp("@maxValue");
+            const char* stepsString = config->queryProp("@steps");
+            if (isEmptyString(minValueString) && isEmptyString(maxValueString) && isEmptyString(stepsString))
+                throw makeStringExceptionV(0, "Missing 'minValue', 'maxValue', and/or 'steps' range specs paired with XPath '%s'", defaultDelta.xpath.str());
+
+            // MORE: generalize to not assume byte counts
+            __uint64 minValue = strToBytes(minValueString, StrToBytesFlags::ThrowOnError);
+            __uint64 maxValue = strToBytes(maxValueString, StrToBytesFlags::ThrowOnError);
+            __uint64 steps = strtoull(stepsString, nullptr, 0);
+            if (minValue > maxValue)
+                throw makeStringExceptionV(0, "Invalid axis range: %s to %s", minValueString, maxValueString);
+            if (!steps)
+                throw makeStringExceptionV(0, "Invalid axis steps: %s", stepsString);
+            __uint64 stepSize = (maxValue - minValue) / steps;
+            for (__uint64 value = minValue; value <= maxValue; value += stepSize)
+            {
+                Iteration& iteration = axis.emplace_back();
+                Iteration::Delta& delta = iteration.deltas.emplace_back();
+                delta.linkId.set(defaultDelta.linkId);
+                delta.xpath.set(defaultDelta.xpath);
+                delta.value.set(VStringBuffer("%" I64F "u", value));
+            }
         }
     }
     validateIterations(axis, true);
 }
 
-void CIndexPlotOp::parseIterations(IPropertyTreeIterator* iterIter, Iterations& iterations)
+void CIndexPlotOp::parseIterations(IPropertyTreeIterator* iterIter, Iterations& iterations, const Iteration::Delta* defaultDelta)
 {
     Owned<IPropertyTreeIterator> owner = iterIter; // ensure iterator cleanup on completion
     if (!iterIter->first())
@@ -247,12 +309,14 @@ void CIndexPlotOp::parseIterations(IPropertyTreeIterator* iterIter, Iterations& 
         IPropertyTree& iterTree = iterIter->query();
         const char* name = iterTree.queryProp("@name");
         std::vector<Iteration::Delta> deltas;
-        Owned<IPropertyTreeIterator> deltaIter = iterTree.getElements("delta");
-        ForEach(*deltaIter)
-            deltas.emplace_back(deltaIter->query());
-        if (deltas.empty())
-            throw makeStringExceptionV(0, "Iteration %s must have at least one delta", name);
-        iterations.emplace_back(name, std::move(deltas));
+        Owned<IPropertyTreeIterator> childIter = iterTree.getElements("delta");
+        ForEach(*childIter)
+            (void)deltas.emplace_back(childIter->query(), defaultDelta);
+        std::set<std::string> inputs;
+        childIter.setown(iterTree.getElements("input"));
+        ForEach(*childIter)
+            (void)inputs.emplace(childIter->query().queryProp("."));
+        (void)iterations.emplace_back(name, std::move(deltas), std::move(inputs));
     }
 }
 
@@ -260,13 +324,18 @@ void CIndexPlotOp::validateIterations(const Iterations& iterations, bool isAxis)
 {
     for (const Iteration& iteration : iterations)
     {
-        // Each iteration must have a non-empty name
+        // Each plot iteration must have a non-empty name
         if (!isAxis && isEmptyString(iteration.name.get()))
             throw makeStringException(0, "Plot iteration must have a non-empty name");
 
-        // Each iteration must have at least one delta
-        if (isAxis && iteration.deltas.empty())
-            throw makeStringExceptionV(0, "Axis iteration %s must have at least one delta", iteration.name.get());
+        // Each iteration must have at least one delta or input
+        if (iteration.deltas.empty() && iteration.inputPaths.empty())
+        {
+            if (!iteration.name.isEmpty())
+                throw makeStringExceptionV(0, "Iteration %s must have at least one delta or input", iteration.name.get());
+            else
+                throw makeStringException(0, "Unnamed iteration must have at least one delta or input");
+        }
 
         for (const Iteration::Delta& delta : iteration.deltas)
         {
@@ -297,7 +366,7 @@ bool CIndexPlotOp::doOnePlot(LinkChanges& linkChanges)
         const char* plotName = linkChanges.front()->name.get();
         if (!isEmptyString(plotName))
         {
-            plotData.append(plotName);
+            plotData.append('"').append(plotName).append('"');
             outputCell(plotData, false);
             outputEOLN();
         }
@@ -366,8 +435,9 @@ bool CIndexPlotOp::doXAxis(LinkChanges& linkChanges, size_t yAxisIdx)
             // generate the visitor chain to produce one plot value
             Owned<IEventVisitor> chain;
             chain.set(this);
-            for (const LinkSpec& linkSpec : links)
+            for (auto it = links.rbegin(); it != links.rend(); ++it)
             {
+                const LinkSpec& linkSpec = *it;
                 const IPropertyTree& linkTree = (linkSpec.modified ? *linkSpec.modified : *linkSpec.original);
                 const char* kind = linkTree.queryProp("@kind");
                 Owned<IEventVisitationLink> link;
@@ -419,6 +489,11 @@ bool CIndexPlotOp::doXAxis(LinkChanges& linkChanges, size_t yAxisIdx)
         cellIdx++;
         linkChanges.pop_back();
         postTraversalReset();
+        if (!savedInputPaths.empty())
+        {
+            inputPaths = std::move(savedInputPaths);
+            savedInputPaths.clear();
+        }
     }
     outputEOLN();
 
@@ -427,8 +502,16 @@ bool CIndexPlotOp::doXAxis(LinkChanges& linkChanges, size_t yAxisIdx)
 
 void CIndexPlotOp::applyIteration(LinkChanges& linkChanges)
 {
+    bool delayedInputPreservation = !inputPaths.empty();
+    if (!inputPaths.empty())
+    {
+        savedInputPaths = inputPaths;
+        inputPaths.clear();
+    }
     for (const Iteration* iteration : linkChanges)
     {
+        if (!iteration->inputPaths.empty())
+            inputPaths.insert(iteration->inputPaths.begin(), iteration->inputPaths.end());
         for (const Iteration::Delta& delta : iteration->deltas)
         {
             LinkSpecs::iterator linkIt = std::find_if(links.begin(), links.end(), [&](const LinkSpec& link) {
@@ -443,12 +526,22 @@ void CIndexPlotOp::applyIteration(LinkChanges& linkChanges)
             if (!isEmptyString(xpath))
             {
                 const char* value = delta.value.get();
+
                 if (value)
                     linkIt->modified->setProp(xpath, value);
                 else
                     linkIt->modified->removeProp(xpath);
             }
         }
+    }
+    if (inputPaths.empty())
+    {
+        if (!defaultInputPaths.empty())
+            inputPaths.insert(defaultInputPaths.begin(), defaultInputPaths.end());
+        else if (!savedInputPaths.empty())
+            inputPaths = std::move(savedInputPaths);
+        else
+            throw makeStringException(0, "plot cell iteration without input");
     }
 }
 
