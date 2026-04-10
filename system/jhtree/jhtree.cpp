@@ -1233,6 +1233,13 @@ void CKeyStore::recordEventIndexInformation()
         IKeyIndex &index = mapping.query();
         unsigned id = index.queryId();
         const char *name = index.queryFileName();
+        const IFileIO * io = index.queryFileIO();
+        if (io)
+        {
+            IFile * file = io->queryFile();
+            if (file)
+                name = file->queryFilename();
+        }
         assertex(name);
         recorder.recordFileInformation(id, name);
     }
