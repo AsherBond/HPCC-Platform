@@ -415,6 +415,7 @@ class JlibCompressionStandardTest : public JlibCompressionTestBase
         CPPUNIT_TEST(testTinyCompression);
         CPPUNIT_TEST(test);
         CPPUNIT_TEST(testOverflowBug);
+        CPPUNIT_TEST(testIncompressible);
     CPPUNIT_TEST_SUITE_END();
 
 public:
@@ -613,6 +614,82 @@ public:
 
             CPPUNIT_ASSERT_MESSAGE(VStringBuffer("Inconsistent persist method for method %s", type), compressor->getCompressionMethod() == handler1->queryPersistMethod());
         }
+    }
+
+    void runIncompressibleTest(ICompressHandler & handler)
+    {
+        try
+        {
+            const char * type = handler.queryType();
+            const char * options = streq("AES", type) ? aesKey: "";
+            Owned<ICompressor> compressor = handler.getCompressor(options);
+            if (!compressor) return;
+
+            MemoryBuffer compressed;
+            size32_t mbSize = 1000 * 1000; // 1MB initial size, causing reallocation & fallback logic to trigger
+            compressor->open(compressed, mbSize, 0);
+
+            // Generate ~2.5 MB of pseudo-random data to ensure it expands rather than shrinking
+            size32_t dataSize = 2500000;
+            MemoryBuffer src;
+            byte * dst = (byte *)src.reserve(dataSize);
+            unsigned seed = 1337;
+            for (size32_t i=0; i<dataSize; i++)
+            {
+                seed = (seed * 1103515245) + 12345;
+                dst[i] = (byte)((seed / 65536) % 256);
+            }
+
+            compressor->write(src.bytes(), src.length());
+            compressor->close();
+
+            Owned<IExpander> expander = handler.getExpander(options);
+            size32_t required = expander->init(compressed.bytes());
+            MemoryBuffer tgt;
+            tgt.reserveTruncate(required);
+            expander->expand(tgt.bufferBase());
+
+            CPPUNIT_ASSERT_EQUAL(src.length(), tgt.length());
+            CPPUNIT_ASSERT(memcmp(src.bytes(), tgt.bytes(), src.length()) == 0);
+        }
+        catch (IException *e)
+        {
+            StringBuffer msg;
+            msg.appendf("Incompressible test %s: ", handler.queryType());
+            e->errorMessage(msg);
+            DBGLOG("%s", msg.str());
+            ::Release(e);
+            CPPUNIT_FAIL(msg.str());
+        }
+    }
+
+    void testIncompressible()
+    {
+        START_TEST
+
+        Owned<ICompressHandlerIterator> iter = getCompressHandlerIterator();
+        ForEach(*iter)
+        {
+            ICompressHandler &handler = iter->query();
+            const char * type = handler.queryType();
+
+            bool onlyFixedSize = strieq(type, "diff") || strieq(type, "randrow");
+            if (onlyFixedSize)
+                continue;
+
+            // The stream compressors only currently support fixed size outputs
+            // They also do not support partial writes
+            if (strieq(type, "lz4s") || strieq(type, "lz4shc"))
+                continue;
+
+            // zstds needs to support partial writes
+            if (startsWithIgnoreCase(type, "zstds"))
+                continue;
+
+            runIncompressibleTest(handler);
+        }
+
+        END_TEST
     }
 };
 
