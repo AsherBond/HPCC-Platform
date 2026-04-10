@@ -31,6 +31,9 @@ globals() {
     if [ "$ARCH" == "arm64" ]; then
         VCPKG_REF="$VCPKG_REF-arm"
         RELEASE_BASE_IMAGE="arm64v8/$RELEASE_BASE_IMAGE"
+        DOCKER_PLATFORM="--platform linux/arm64"
+    else
+        DOCKER_PLATFORM=""
     fi
     DOCKER_USERNAME="${DOCKER_USERNAME:-hpccbuilds}"
 
@@ -54,7 +57,7 @@ globals() {
 
 create_build_image() {
     echo "--- Create 'build-$BUILD_OS:$VCPKG_REF' image---"
-    docker build --rm -f "$SCRIPT_DIR/$BUILD_OS.dockerfile" \
+    docker build --rm $DOCKER_PLATFORM -f "$SCRIPT_DIR/$BUILD_OS.dockerfile" \
         -t build-$BUILD_OS:$VCPKG_REF \
         --build-arg DOCKER_NAMESPACE=$DOCKER_USERNAME \
         --build-arg VCPKG_REF=$VCPKG_REF \
@@ -64,14 +67,14 @@ create_build_image() {
 create_platform_core_image() {
     local base=$1
     echo "--- Create 'platform-core:release' image ---"
-    docker build --rm -f "$SCRIPT_DIR/platform-core-$BUILD_OS.dockerfile" \
+    docker build --rm $DOCKER_PLATFORM -f "$SCRIPT_DIR/platform-core-$BUILD_OS.dockerfile" \
         -t platform-core:release \
         --build-arg BASE_IMAGE=$base \
             "$SCRIPT_DIR/." 
 
     if [ "$MODE" = "debug" ]; then
         echo "--- Create 'platform-core:debug' image ---"
-        docker build --rm -f "$SCRIPT_DIR/platform-core-debug-$BUILD_OS.dockerfile" \
+        docker build --rm $DOCKER_PLATFORM -f "$SCRIPT_DIR/platform-core-debug-$BUILD_OS.dockerfile" \
             -t platform-core:debug \
             --build-arg BASE_IMAGE=platform-core:release \
                 "$SCRIPT_DIR/."
@@ -79,7 +82,7 @@ create_platform_core_image() {
 
     if [ "$MODE" = "relwithdebinfo" ]; then
         echo "--- Create 'platform-core:relwithdebinfo' image ---"
-        docker build --rm -f "$SCRIPT_DIR/platform-core-debug-$BUILD_OS.dockerfile" \
+        docker build --rm $DOCKER_PLATFORM -f "$SCRIPT_DIR/platform-core-debug-$BUILD_OS.dockerfile" \
             -t platform-core:relwithdebinfo \
             --build-arg BASE_IMAGE=platform-core:release \
                 "$SCRIPT_DIR/."
@@ -95,7 +98,7 @@ finalize_platform_core_image() {
         local image_name=incr-core:$MODE
         echo "--- Incremental '$image_name' image ---"
     fi
-    local CONTAINER=$(docker run -d \
+    local CONTAINER=$(docker run -d $DOCKER_PLATFORM \
         --mount source=hpcc_src,target=/hpcc-dev/HPCC-Platform,type=volume \
         --mount source=$HPCC_BUILD,target=/hpcc-dev/build,type=volume \
         $image_name "tail -f /dev/null")
@@ -107,7 +110,7 @@ finalize_platform_core_image() {
     if [ "$MODE" = "debug" ] || [ "$MODE" = "relwithdebinfo" ]; then
         # Add sources
         echo "--- Adding sources to '$image_name' image ---"
-        local CONTAINER=$(docker run -d \
+        local CONTAINER=$(docker run -d $DOCKER_PLATFORM \
             --mount source=$ROOT_DIR,target=/hpcc-dev/HPCC-Platform-local,type=bind,readonly \
             --mount source=$HPCC_BUILD,target=/hpcc-dev/build,type=volume \
             hpccsystems/platform-core:$IMAGE_BRANCH_TAG-$MODE-$crc "tail -f /dev/null")
@@ -140,7 +143,7 @@ finalize_platform_core_image_from_folder() {
     local build_folder=$(realpath "$DEB_FILE")
     local source_folder=$(grep "CMAKE_HOME_DIRECTORY:INTERNAL" $build_folder/CMakeCache.txt | cut -d "=" -f 2)
     echo "--- Finalize '$build_folder' image ---"
-    CONTAINER=$(docker run -d \
+    CONTAINER=$(docker run -d $DOCKER_PLATFORM \
         --mount source=$source_folder,target=$source_folder,type=bind \
         --mount source=$build_folder,target=$build_folder,type=bind \
         $image_name "tail -f /dev/null")
@@ -174,7 +177,7 @@ finalize_platform_core_image_from_deb() {
 
     local image_name=platform-core:$MODE
     echo "--- Finalize '$filename' image ---"
-    CONTAINER=$(docker run -d \
+    CONTAINER=$(docker run -d $DOCKER_PLATFORM \
         --mount source=$deb_file,target=/tmp/hpcc.deb,type=bind \
         --mount source=$HPCC_BUILD,target=/hpcc-dev/build,type=volume \
         $image_name "tail -f /dev/null")
@@ -197,7 +200,7 @@ clean() {
 
 run() {
     local cmd=$1
-    docker run --rm \
+    docker run --rm $DOCKER_PLATFORM \
         --mount source=$ROOT_DIR,target=/hpcc-dev/HPCC-Platform-local,type=bind,readonly \
         --mount source=hpcc_src,target=/hpcc-dev/HPCC-Platform,type=volume \
         --mount source="$ROOT_DIR/.git",target=/hpcc-dev/HPCC-Platform/.git,type=bind \
@@ -409,6 +412,7 @@ status() {
     echo "RELEASE_BASE_IMAGE: $RELEASE_BASE_IMAGE"
     echo "HPCC_BUILD: $HPCC_BUILD"
     echo "ARCH: $ARCH"
+    echo "DOCKER_PLATFORM: $DOCKER_PLATFORM"
     echo "NAME_TAG: $NAME_TAG"
 }
 

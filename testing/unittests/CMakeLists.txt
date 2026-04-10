@@ -49,6 +49,7 @@ set (    SRCS
          fxpptests.cpp
          espapicmdtests.cpp
          filetests.cpp
+         ptreetests.cpp
          wutests.cpp
          socketasynctests.cpp
          multishotaccepttests.cpp
