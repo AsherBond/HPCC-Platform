@@ -228,7 +228,29 @@ size32_t CBlockCompressor::flushCompress(size32_t extra)
 
             // compressed data fits - all good.
             if (numWritten == toCompress)
-                break;
+            {
+                if (outSize < numWritten)
+                    break;
+
+                // Do not write a negatively compressed block if it's the final flush
+                if (extra == 0)
+                    return 0;
+
+                if (outBufMb)
+                {
+                    // If the compressed data is larger than the uncompressed data, we cannot reliably write it
+                    // as a compressed block because the expander might mistake it for the final uncompressed block.
+                    // Instead, dynamically expand the input buffer and keep the data uncompressed for now.
+                    size32_t toAdd = maxInputSize / 2;
+                    if (toAdd < extra) toAdd = extra;
+                    maxInputSize = maxInputSize + toAdd;
+                    inbuf = (byte *)inma.ensureCapacity(maxInputSize);
+                    inlen += extra;
+                    return extra; // claim ownership over uncompressed remainder
+                }
+
+                // For fixed size buffers (!outBufMb), it will naturally fall through to the handler below
+            }
 
             if (!outBufMb)
             {
