@@ -180,6 +180,10 @@ int main(int argc, const char *argv[])
                 if (argNo<argc)
                    loadLocations.append(argv[argNo]);
             }
+            else if (startsWith(arg, "--config="))
+            {
+                // let it pass, already handled by loadConfiguration for passing custom config yaml files
+            }
             else if (startsWith(arg, "--")) // let test style arguments through
             {
                 // is it a test option of the form --<test>.<option> (or --<test>.<option>=<value>)

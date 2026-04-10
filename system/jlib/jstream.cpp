@@ -21,6 +21,7 @@
 #include "jstring.hpp"
 #include "jexcept.hpp"
 #include "jlog.hpp"
+#include "jthread.hpp"
 #include <assert.h>
 #include <stdio.h>
 #ifdef _WIN32
@@ -28,6 +29,10 @@
 #endif
 #include "jlzw.hpp"
 #include "jcrc.hpp"
+#include <thread>
+#include <atomic>
+#include <vector>
+#include <memory>
 
 constexpr size32_t minBlockReadSize = 0x4000;       //16K - used when fetching a single row from a file (e.g. FETCH/KEYED JOIN)
 constexpr size32_t defaultBlockReadSize = 0x100000; //1MB
@@ -352,6 +357,461 @@ protected:
 IBufferedSerialInputStream * createBufferedInputStream(ISerialInputStream * input, size32_t blockReadSize)
 {
     return new CBlockedSerialInputStream(input, blockReadSize);
+}
+
+//---------------------------------------------------------------------------
+
+// Parallel Read-Ahead Buffered Input Stream
+// Uses IFileIO for concurrent positioned reads to maintain correct data order
+class CParallelReadAheadInputStream final : public CInterfaceOf<IBufferedSerialInputStream>
+{
+    class Chunk
+    {
+        CParallelReadAheadInputStream &owner;
+        std::atomic<bool> ready{false}; // Set to true by reader thread when data is ready for consumption
+        Owned<IException> exception;    // Exception caught during read, if any
+        // Each chunk has its own synchronization via semaphores.
+        // readerReadySem starts at 1 (chunk is initially empty, reader can proceed).
+        // consumerSem starts at 0 (consumer must wait for data to be ready).
+        Semaphore readerReadySem{1};
+        Semaphore consumerSem;
+    public: // data
+        offset_t fileOffset = 0;        // Absolute offset in the file this chunk represents
+        size32_t dataSize = 0;          // Actual bytes read (may be < chunkSize at EOF)
+    public:
+        Chunk(CParallelReadAheadInputStream &_owner, unsigned _index) : owner(_owner) {}
+        Chunk(const Chunk&) = delete;
+        Chunk& operator=(const Chunk&) = delete;
+
+        void reset()
+        {
+            ready = false;
+            dataSize = 0;
+            exception.clear();
+            readerReadySem.reinit(1);
+            consumerSem.reinit(0);
+        }
+
+        // Wait for chunk data to become available.  Returns true if the chunk
+        // has valid data ready to consume, false otherwise (stopped, empty, or exception).
+        // Checking state first (without touching the semaphore) makes this safe to call
+        // on an already-Ready chunk (e.g. the overflow peek and extend paths).
+        size32_t waitForData() // called by peek/doPeek
+        {
+            while (!ready)
+            {
+                if (owner.stopped())
+                    return 0;
+                consumerSem.wait();
+            }
+            if (exception)
+                throw exception.getClear();
+            return dataSize;
+        }
+
+        void markReadyAndSignal()
+        {
+            [[maybe_unused]] bool wasReady = ready.exchange(true);
+            if (owner.stopRequested)
+                return;
+            dbgassertex(!wasReady);
+            consumerSem.signal();
+        }
+
+        void waitUntilConsumed()
+        {
+            readerReadySem.wait();
+        }
+
+        void signalReader() // called by markInputEOF() to release readers, but do not alter ready state
+        {
+            readerReadySem.signal();
+        }
+
+        void markConsumedAndSignal() // called by advanceConsumedChunks() when the consumer has moved past this chunk, ready state should always be true at this point
+        {
+            [[maybe_unused]] bool wasReady = ready.exchange(false);
+            dbgassertex(owner.stopRequested || wasReady);
+            readerReadySem.signal();
+        }
+
+        // Main reader thread loop - runs continuously to keep this chunk filled
+        void runReaderThread(unsigned threadIdx)
+        {
+            while (!owner.stopped())
+            {
+                // Wait for this chunk to be consumed (or initially empty)
+                waitUntilConsumed();
+                dataSize = 0;
+                if (owner.stopped())
+                    break;
+
+                // Read data from input stream using positioned read
+                // IFileIO::read() is thread-safe for reads at different offsets
+                try
+                {
+                    dataSize = owner.readChunk(threadIdx, fileOffset);
+
+                    // A short or zero-byte read means EOF — break so the consumer
+                    // can see the final (possibly empty) chunk and handle EOS.
+                    if (dataSize < owner.chunkSize)
+                        break;
+                }
+                catch (IException *e)
+                {
+                    exception.setown(e);
+                    break;
+                }
+
+                // Because chunks are consumed strictly sequentially in a ring buffer,
+                // each chunk leaps exactly (numThreads * chunkSize) ahead for its next read.
+                fileOffset += owner.numThreads * owner.chunkSize;
+                // Nothing left to read — avoid a wasted wait/read cycle
+                if (fileOffset >= owner.endOffset)
+                    break;
+                markReadyAndSignal();
+            }
+            markReadyAndSignal();
+        }
+    };
+
+    // configure/set by ctor
+    Linked<IFileIO> input;
+    MemoryAttr buffer;          // Ring buffer: (numThreads * chunkSize) + overflowMaxSize bytes
+    const unsigned numThreads{0};
+    const size32_t chunkSize{0};
+    size32_t overflowMaxSize{0};
+    size32_t ringBufferSize{0};     // numThreads * chunkSize (the ring portion only)
+    std::vector<std::unique_ptr<Chunk>> chunks;
+    std::vector<std::thread> threads;
+    std::atomic<bool> stopRequested{false}; // Set to true via stop() or internally by markInputEOF() when no more data is required
+    offset_t readPos = 0;
+    offset_t endOffset = 0;
+    bool consumerEOF = false;
+    bool started = false;
+    unsigned currentChunkIdx = 0;         // Sequential chunk index of the first currently active chunk
+    size32_t readOffset = 0;              // Bytes consumed relative to currentChunkIdx base (normalized to < chunkSize by advanceConsumedChunks)
+    size32_t contiguousRingEndOffset = 0; // Total contiguous valid bytes starting from currentChunkIdx's base
+
+    bool stopped()
+    {
+        return stopRequested;
+    }
+    void startThreads()
+    {
+        stopRequested = false;
+
+        for (unsigned i = 0; i < numThreads; i++)
+        {
+            // Pre-assign deterministic offsets so chunk 0 always gets the first
+            // portion of the file, chunk 1 the second, etc.
+            offset_t fileOffset = readPos + (offset_t)i * chunkSize;
+            chunks[i]->fileOffset = fileOffset;
+            // No point launching a thread whose first read is already beyond EOF
+            if (fileOffset >= endOffset)
+                break;
+
+            auto f = [this, i]()
+            {
+                chunks[i]->runReaderThread(i);
+            };
+            threads.emplace_back(f);
+        }
+
+        started = true;
+    }
+    void stop()
+    {
+        if (!started)
+            return;
+
+        stopRequested = true;
+
+        // Wake up all background reader threads so they can terminate
+        for (auto & chunk : chunks)
+            chunk->markConsumedAndSignal();
+
+        for (auto & thread : threads)
+        {
+            if (thread.joinable())
+                thread.join();
+        }
+
+        threads.clear();
+        started = false;
+    }
+
+    size32_t waitForData(unsigned chunkNum) // called by peek/doPeek
+    {
+        Chunk &chunk = *chunks[chunkNum];
+        size32_t size = chunk.waitForData();
+        if (size < chunkSize)
+            markInputEOF();
+        return size;
+    }
+
+public:
+    CParallelReadAheadInputStream(IFileIO * _input, unsigned _numThreads, size32_t _chunkSize, size32_t _overflowMaxSize)
+        : input(_input), numThreads(_numThreads), chunkSize(_chunkSize), overflowMaxSize(_overflowMaxSize)
+    {
+        if (numThreads < 2)
+            throw makeStringException(-1, "Parallel read-ahead input stream requires at least 2 threads");
+
+        // To be able to extend across all other chunks in the ring buffer if needed, the overflow region must be at least this big.
+        // If not specified, set it to exactly this size so that the total buffer size is a nice multiple of chunkSize.
+        size32_t maxOverflowSize = (numThreads-1) * chunkSize; // see comments in peek() for reasons.
+        if (0 == overflowMaxSize)
+            overflowMaxSize = maxOverflowSize;
+        else if (overflowMaxSize > maxOverflowSize)
+            throw makeStringExceptionV(-1, "Parallel read-ahead buffer size [CParallelReadAheadInputStream(numThreads=%u, chunkSize=%u, overflowMaxSize=%u)] cannot be larger than %u", numThreads, chunkSize, overflowMaxSize, maxOverflowSize); 
+
+        ringBufferSize = numThreads * chunkSize;
+        buffer.allocate(ringBufferSize + overflowMaxSize);
+        for (unsigned i = 0; i < numThreads; i++)
+            chunks.emplace_back(std::make_unique<Chunk>(*this, i));
+
+        endOffset = input->size();
+    }
+
+    ~CParallelReadAheadInputStream()
+    {
+        stop();
+    }
+
+    void markInputEOF()
+    {
+        // Signal reader threads to stop — no more chunks will be consumed.
+        stopRequested = true;
+        for (auto & chunk : chunks)
+            chunk->signalReader();
+    }
+
+    // Release any chunks that the readOffset has fully moved past.
+    void advanceConsumedChunks()
+    {
+        // Free chunks we've fully moved past
+        unsigned consumedWholeChunks = readOffset / chunkSize;
+        if (consumedWholeChunks > 0)
+        {
+            for (unsigned i = 0; i < consumedWholeChunks; i++)
+            {
+                chunks[currentChunkIdx]->markConsumedAndSignal();
+                currentChunkIdx = (currentChunkIdx + 1) % numThreads;
+            }
+            size32_t consumedBytes = consumedWholeChunks * chunkSize;
+            readOffset -= consumedBytes; // equivalent to readOffset %= chunkSize, i.e. it is always an offset in the current chunk at this point
+            contiguousRingEndOffset -= consumedBytes; // Note: may still span multiple chunks if a large peek() was previously called
+        }
+
+        // If we just exhausted the final partial chunk (which only happens at EOF), 
+        // release it and reset offsets. If the stream ended perfectly on a chunk boundary, 
+        // the whole-chunk logic above already handled it and readOffset is 0.
+        if (readOffset > 0 && readOffset == contiguousRingEndOffset)
+        {
+            chunks[currentChunkIdx]->markConsumedAndSignal();
+            currentChunkIdx = (currentChunkIdx + 1) % numThreads;
+            readOffset = 0;
+            contiguousRingEndOffset = 0;
+        }
+    }
+
+    size32_t readChunk(unsigned chunkIdx, offset_t fileOffset)
+    {
+        byte * chunkData = static_cast<byte *>(buffer.bufferBase()) + (chunkIdx * chunkSize);
+        return input->read(fileOffset, chunkSize, chunkData);
+    }
+
+    // Common implementation for read() and skip().  If ptr is nullptr, data is discarded (skip mode).
+    size32_t consumeData(size32_t len, void * ptr)
+    {
+        size32_t totalConsumed = 0;
+
+        while (totalConsumed < len)
+        {
+            size32_t got;
+            const byte *chunkPtr = static_cast<const byte *>(doPeek(len - totalConsumed, got));
+            if (!chunkPtr)
+                break;
+
+            size32_t toConsume = std::min(len - totalConsumed, got);
+
+            if (ptr)
+                memcpy(static_cast<byte *>(ptr) + totalConsumed, chunkPtr, toConsume);
+            readOffset += toConsume; // NB: will not exceed contiguousRingEndOffset
+            totalConsumed += toConsume;
+            readPos += toConsume;
+
+            advanceConsumedChunks();
+        }
+
+        return totalConsumed;
+    }
+
+    virtual size32_t read(size32_t len, void * ptr) override
+    {
+        return consumeData(len, ptr);
+    }
+
+    virtual void skip(size32_t sz) override
+    {
+        consumeData(sz, nullptr);
+    }
+
+    virtual void get(size32_t len, void * ptr) override
+    {
+        size32_t got = read(len, ptr);
+        if (got != len)
+            throw makeStringExceptionV(-1, "End of input stream for read of %u bytes at offset %llu", len, tell());
+    }
+
+    virtual void reset(offset_t _offset, offset_t _flen) override
+    {
+        stop();
+
+        assertex(UnknownOffset != _flen);
+        readPos = _offset;
+        endOffset = _offset + _flen;
+        consumerEOF = false;
+        currentChunkIdx = 0;  // Reset to start from first chunk
+        readOffset = 0;
+        contiguousRingEndOffset = 0;
+
+        // Reset all chunks
+        for (auto & chunk : chunks)
+            chunk->reset();
+
+        // Threads will be lazily restarted on the next read()
+    }
+
+    virtual offset_t tell() const override
+    {
+        return readPos;
+    }
+
+    virtual bool eos() override
+    {
+        if (consumerEOF)
+            return true;
+        if (readOffset < contiguousRingEndOffset)
+            return false;
+
+        size32_t got;
+        return nullptr == doPeek(1, got);
+    }
+
+    // Core peek logic: loads chunks from the ring buffer and extends across
+    // contiguous chunks.  Does NOT handle overflow across the wrap point.
+    const void * doPeek(size32_t wanted, size32_t &got)
+    {
+        if (consumerEOF)
+        {
+            got = 0;
+            return nullptr;
+        }
+
+        if (!started)
+            startThreads();
+
+        // If no data buffered, load the next chunk
+        // Note: advanceConsumedChunks() guarantees that if readOffset catches up to 
+        // contiguousRingEndOffset, both are immediately reset to 0.
+        if (readOffset == contiguousRingEndOffset)
+        {
+            dbgassertex(readOffset == 0);
+
+            contiguousRingEndOffset = waitForData(currentChunkIdx);
+            if (0 == contiguousRingEndOffset)
+            {
+                consumerEOF = true;
+                got = 0;
+                return nullptr;
+            }
+        }
+
+        // Extend across subsequent memory-contiguous chunks if more data is needed.
+        unsigned nextIdx = currentChunkIdx + (contiguousRingEndOffset / chunkSize);
+        while (contiguousRingEndOffset - readOffset < wanted && !stopRequested)
+        {
+            if (nextIdx >= numThreads)
+                break; // Hit the wrap point, contiguous segment ends here.
+
+            size32_t size = waitForData(nextIdx);
+            contiguousRingEndOffset += size;
+            nextIdx++;
+            if (size < chunkSize)
+                break;
+        }
+
+        got = contiguousRingEndOffset - readOffset;
+        const byte * bufBase = static_cast<const byte *>(buffer.bufferBase());
+        return bufBase + (currentChunkIdx * chunkSize) + readOffset;
+    }
+
+    virtual const void * peek(size32_t wanted, size32_t &got) override
+    {
+        const void * ret = doPeek(wanted, got);
+        if (!ret || got >= wanted || stopRequested)
+            return ret;
+
+        // doPeek returned contiguous data up to the ring buffer wrap point,
+        // but not enough.  Copy the continuation from the leading chunks
+        // into the overflow region that sits right after the ring buffer.
+        // This makes currentChunkPtr..currentChunkPtr+wanted contiguous.
+        size32_t shortfall = wanted - got;
+
+        // This can never be greater than chunkSize * (numThreads-1) which
+        // would occur if the starting contiguous chunk (currentChunkIdx)
+        // was the last one in the ring buffer, in which case we can read
+        // maxChunks-1 into the overflow region.
+
+        // The number of chunks that can be copied into the overflow buffer to wrap around is exactly
+        // the number of chunks preceding currentChunkIdx.
+        // e.g. with chunks 0-3, if currentChunkIdx=2, we wrapped at chunk 3, so we can use chunks 0 and 1 (max=2).
+        unsigned maxAvailableChunks = currentChunkIdx;
+        if (shortfall > overflowMaxSize)
+            throw makeStringExceptionV(-1, "Parallel read ahead peek shortfall (%u) exceeds configured overflow buffer size (%u)", shortfall, overflowMaxSize);
+        if (shortfall > maxAvailableChunks * chunkSize)
+            throw makeStringExceptionV(-1, "Parallel read ahead peek shortfall (%u) exceeds available free space from the contiguous buffer (%u)", shortfall, maxAvailableChunks * chunkSize);
+
+        byte * overflowDest = static_cast<byte *>(buffer.bufferBase()) + ringBufferSize;
+        size32_t copied = 0;
+        unsigned lookIdx = 0;  // After the wrap, continuation starts at chunk 0
+        while (copied < shortfall)
+        {
+            dbgassertex(currentChunkIdx != lookIdx);
+            size32_t size = waitForData(lookIdx);
+            if (size)
+            {
+                const byte * lookPtr = static_cast<const byte *>(buffer.bufferBase()) + (lookIdx * chunkSize);
+                size32_t toCopy = std::min(shortfall - copied, size);
+                memcpy(overflowDest + copied, lookPtr, toCopy);
+                copied += toCopy;
+            }
+
+            if (size < chunkSize)
+                break;
+
+            lookIdx++;
+            if (lookIdx >= numThreads)
+                throwUnexpected(); // Should never happen because of the shortfall check above
+        }
+
+        // The returned pointer is still whatever doPeek returned — the contiguous
+        // span now extends through the ring tail and into the overflow region.
+
+        // Note: We intentionally do NOT update contiguousRingEndOffset or readOffset here.
+        // contiguousRingEndOffset and readOffset track the contiguous ring buffer ownership
+        // driving consumeData() and advanceConsumedChunks(). The data we just
+        // copied into the overflow buffer purely satisfies this single peek's contiguity requirement
+        // without altering the underlying chunk ownership or logical boundaries.
+        got = (contiguousRingEndOffset - readOffset) + copied;
+        return ret;
+    }
+};
+
+IBufferedSerialInputStream * createParallelReadAheadInputStream(IFileIO * input, unsigned numThreads, size32_t chunkSize, size32_t overflowMaxSize)
+{
+    return new CParallelReadAheadInputStream(input, numThreads, chunkSize, overflowMaxSize);
 }
 
 //---------------------------------------------------------------------------
@@ -1523,7 +1983,62 @@ ISerialInputStream *createProgressStream(ISerialInputStream *stream, offset_t of
     return new CProgressStream(stream, offset, len, msg, periodSecs);
 }
 
-
+ISerialOutputStream *createProgressStream(ISerialOutputStream *stream, offset_t offset, offset_t len, const char *msg, unsigned periodSecs)
+{
+    class CProgressOutputStream : public CSimpleInterfaceOf<ISerialOutputStream>
+    {
+        Linked<ISerialOutputStream> stream;
+        offset_t offset = 0;
+        offset_t totalSize = 0;
+        offset_t pos = 0;
+        StringAttr msg;
+        void log(double pct)
+        {
+            PROGLOG("%s - %.2f%% complete", msg.get(), pct);
+        }
+        void logProgressIfNeeded()
+        {
+            if (periodTimer.hasElapsed())
+            {
+                if (unlikely(0 == totalSize))
+                    log(100.0);
+                else
+                {
+                    double pct = ((double)pos) / totalSize * 100;
+                    log(pct);
+                }
+            }
+        }
+        PeriodicTimer periodTimer;
+    public:
+        CProgressOutputStream(ISerialOutputStream *_stream, offset_t _offset, offset_t len, const char *_msg, unsigned periodSecs)
+            : stream(_stream), offset(_offset), msg(_msg), periodTimer(periodSecs*1000, true)
+        {
+            totalSize = offset+len;
+            pos = _offset;
+        }
+        ~CProgressOutputStream()
+        {
+            if (pos == totalSize)
+                log(100.0);
+        }
+        virtual void put(size32_t len, const void * ptr) override
+        {
+            stream->put(len, ptr);
+            pos += len;
+            logProgressIfNeeded();
+        }
+        virtual void flush() override
+        {
+            stream->flush();
+        }
+        virtual offset_t tell() const override
+        {
+            return pos;
+        }
+    };
+    return new CProgressOutputStream(stream, offset, len, msg, periodSecs);
+}
 
 /*
  * Future work:
