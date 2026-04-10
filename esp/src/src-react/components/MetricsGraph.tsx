@@ -6,7 +6,7 @@ import { useConst } from "@fluentui/react-hooks";
 import { bundleIcon, Folder20Filled, Folder20Regular, FolderOpen20Filled, FolderOpen20Regular } from "@fluentui/react-icons";
 import { IScope } from "@hpcc-js/comms";
 import nlsHPCC from "src/nlsHPCC";
-import { FetchStatus, METRICS_GRAPH_TRACK_SELECTION, MetricsView, useMetricsGraphLayout } from "../hooks/metrics";
+import { FetchStatus, GLOBAL_FAKE_ID, METRICS_GRAPH_TRACK_SELECTION, MetricsView, useMetricsGraphLayout } from "../hooks/metrics";
 import { useUserStore } from "../hooks/store";
 import { HolyGrail } from "../layouts/HolyGrail";
 import { AutosizeComponent, AutosizeHpccJSComponent } from "../layouts/HpccJSAdapter";
@@ -283,7 +283,7 @@ export const MetricsGraph: React.FunctionComponent<MetricsGraphProps> = ({
     }, [status, selectedMetrics.length, layoutStatus, isRenderComplete]);
 
     const breadcrumbs = React.useMemo<BreadcrumbInfo[]>(() => {
-        return lineage.map(item => {
+        return lineage.filter(item => item.id !== GLOBAL_FAKE_ID).map(item => {
             return {
                 id: item.name,
                 label: `${item.id} (${metricGraph.childCount(item.name)})`,
