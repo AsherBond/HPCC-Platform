@@ -10,6 +10,16 @@ const useStyles = makeStyles({
         placeContent: "start",
         width: "100%",
         boxSizing: "border-box",
+    },
+    flexRoot: {
+        display: "flex",
+        flexDirection: "column",
+        width: "100%",
+        boxSizing: "border-box",
+    },
+    flexCard: {
+        width: "100%",
+        height: "auto"
     }
 });
 
@@ -24,6 +34,7 @@ export interface CardGroupProps {
     scrollY?: boolean;
     className?: string;
     style?: React.CSSProperties;
+    listMode?: boolean;
 }
 
 export const CardGroup: React.FunctionComponent<CardGroupProps> = ({
@@ -36,11 +47,28 @@ export const CardGroup: React.FunctionComponent<CardGroupProps> = ({
     paddingBlock = tokens.spacingVerticalM,
     scrollY = false,
     className,
-    style
+    style,
+    listMode = false
 }) => {
     const styles = useStyles();
 
     const toCssLen = (v: number | string) => typeof v === "number" ? `${v}px` : v;
+
+    if (listMode) {
+        const computedStyle: React.CSSProperties = {
+            gap: rowGap,
+            paddingInline,
+            paddingBlock,
+            overflowY: scrollY ? "auto" : undefined,
+            minHeight: scrollY ? 0 : undefined,
+            ...style
+        };
+        return <div className={mergeClasses(styles.flexRoot, className)} style={computedStyle}>
+            {React.Children.map(children, child =>
+                child ? <div className={styles.flexCard}>{child}</div> : null
+            )}
+        </div>;
+    }
 
     const computedStyle: React.CSSProperties = {
         gridTemplateColumns: `repeat(auto-fill, minmax(${toCssLen(minColumnWidth)}, 1fr))`,
