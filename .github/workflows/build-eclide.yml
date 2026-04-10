@@ -20,6 +20,21 @@ on:
         description: 'Operating System'
         required: false
         default: 'windows-2022'
+      configure-preset:
+        type: string
+        description: 'CMake Configure Preset'
+        required: false
+        default: 'vcpkg-VS-17'
+      build-preset:
+        type: string
+        description: 'CMake Build Preset'
+        required: false
+        default: 'VS-17-RelWithDebInfo'
+      build-dir:
+        type: string
+        description: 'Build directory name (relative to source)'
+        required: false
+        default: 'build'
       clienttools-community-asset-name:
         type: string
         description: 'Clienttools Community Asset name'
@@ -42,7 +57,7 @@ jobs:
 
   build-bare-metal-eclide:
     name: Build Bare Metal ECLIDE
-    runs-on: "windows-2022"
+    runs-on: ${{ inputs.os }}
     steps:
  
       - name: VCPKG check
@@ -189,10 +204,8 @@ jobs:
         shell: "bash"
         run: |
           cd ECLIDE
-          mkdir -p ./build
-          cd ./build
-          cmake -A Win32 -S ../ -B . -DDIGICERT_KEYPAIR_ALIAS=RIS_Data_Services_HPCC_Systems 
-          cmake --build . --config RelWithDebInfo --target SIGN --parallel $NUMBER_OF_PROCESSORS
+          cmake --preset ${{ inputs.configure-preset }} -DDIGICERT_KEYPAIR_ALIAS=RIS_Data_Services_HPCC_Systems
+          cmake --build --preset ${{ inputs.build-preset }} --target SIGN
         env:
           SM_HOST: https://clientauth.one.digicert.com
           SM_API_KEY: ${{ secrets.DIGICERT_API_KEY }}
@@ -202,11 +215,10 @@ jobs:
       - name: Build Internal ECLIDE
         shell: "bash"
         run: |
+          rm -rf ./ECLIDE/${{ inputs.build-dir }}/CMakeCache.txt ./ECLIDE/${{ inputs.build-dir }}/CMakeFiles
           cd ECLIDE
-          cd ./build
-          rm -rf ./CMakeCache.txt ./CMakeFiles
-          cmake -A Win32 -S ../ -B . -DHPCC_AUDIENCE=internal -DDIGICERT_KEYPAIR_ALIAS=RIS_Data_Services_HPCC_Systems
-          cmake --build . --config RelWithDebInfo --target SIGN --parallel $NUMBER_OF_PROCESSORS
+          cmake --preset ${{ inputs.configure-preset }} -DHPCC_AUDIENCE=internal -DDIGICERT_KEYPAIR_ALIAS=RIS_Data_Services_HPCC_Systems
+          cmake --build --preset ${{ inputs.build-preset }} --target SIGN
         env:
           SM_HOST: https://clientauth.one.digicert.com
           SM_API_KEY: ${{ secrets.DIGICERT_API_KEY }}
@@ -220,21 +232,21 @@ jobs:
           generateReleaseNotes: false
           prerelease: ${{ contains(github.ref, '-rc') }}
           makeLatest: ${{ inputs.make-latest }}
-          artifacts: "./ECLIDE/build/hpccsystems-eclide-community_*.exe"
+          artifacts: "./ECLIDE/${{ inputs.build-dir }}/hpccsystems-eclide-community_*.exe"
       
       - name: Upload Assets to Jfrog
         if: ${{ github.repository_owner == 'hpcc-systems' }}
         shell: bash
         run: |
-          cd ./ECLIDE/build
+          cd ./ECLIDE/${{ inputs.build-dir }}
           packages=($(ls -1 hpccsystems-eclide-internal_*.exe ))
           for _package in ${packages[@]}; do
-            curl -u${{ secrets.JFROG_USERNAME }}:${{ secrets.JFROG_PASSWORD }} "https://${{ secrets.JFROG_REGISTRY }}/hpccpl-windows-local/LN/windows/x86_64/${_package}" -T ${_package}
+            curl -u${{ secrets.JFROG_USERNAME }}:${{ secrets.JFROG_PASSWORD }} "https://${{ secrets.JFROG_REGISTRY }}/hpccpl-windows-local/LN/windows/${{ contains(inputs.configure-preset, '-x64') && 'x86_64' || 'i386' }}/${_package}" -T ${_package}
           done
 
       - name: Upload Error Logs
         if: ${{ failure() || cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: windows-2022-eclide-logs
-          path: ./ECLIDE/build/**/*.log
+          name: ${{ inputs.os }}-${{ inputs.configure-preset }}-eclide-logs
+          path: ./ECLIDE/${{ inputs.build-dir }}/**/*.log

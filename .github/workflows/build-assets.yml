@@ -267,6 +267,28 @@ jobs:
     with:
       community-ref: ${{ needs.preamble.outputs.community_ref }}
       eclide-ref: ${{ needs.preamble.outputs.eclide_ref }}
+      configure-preset: 'vcpkg-VS-17'
+      build-preset: 'VS-17-RelWithDebInfo'
+      build-dir: 'build'
+      clienttools-community-asset-name: 'clienttools-community-for-eclide'
+      clienttools-internal-asset-name: 'clienttools-internal-for-eclide'
+      documentation-asset-name: 'html-help-documents'
+      make-latest: ${{ needs.preamble.outputs.is_latest != 'false' }}
+    secrets: inherit
+
+  build-bare-metal-eclide-x64:
+    needs: [ preamble, build-clienttools-community-windows, build-clienttools-internal-windows, build-documentation ]
+    permissions:
+      contents: write
+      actions: write
+      packages: read
+    uses: ./.github/workflows/build-eclide.yml
+    with:
+      community-ref: ${{ needs.preamble.outputs.community_ref }}
+      eclide-ref: ${{ needs.preamble.outputs.eclide_ref }}
+      configure-preset: 'vcpkg-VS-17-x64'
+      build-preset: 'VS-17-x64-RelWithDebInfo'
+      build-dir: 'build-x64'
       clienttools-community-asset-name: 'clienttools-community-for-eclide'
       clienttools-internal-asset-name: 'clienttools-internal-for-eclide'
       documentation-asset-name: 'html-help-documents'
