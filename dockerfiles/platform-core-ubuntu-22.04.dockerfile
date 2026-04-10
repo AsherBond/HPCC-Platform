@@ -19,6 +19,7 @@
 
 ARG BASE_IMAGE=ubuntu:22.04
 FROM ${BASE_IMAGE}
+ARG TARGETARCH=amd64
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -59,11 +60,11 @@ RUN apt-get install -y \
     gdb \
     nano 
 
-RUN curl -LO https://storage.googleapis.com/kubernetes-release/release/v1.29.7/bin/linux/amd64/kubectl && \
+RUN curl -LO https://storage.googleapis.com/kubernetes-release/release/v1.29.7/bin/linux/${TARGETARCH}/kubectl && \
     chmod +x ./kubectl && \
     mv ./kubectl /usr/local/bin
 
-RUN curl -LO https://packagecloud.io/github/git-lfs/packages/ubuntu/jammy/git-lfs_3.7.1_amd64.deb/download && \
+RUN curl -LO https://packagecloud.io/github/git-lfs/packages/ubuntu/jammy/git-lfs_3.7.1_${TARGETARCH}.deb/download && \
     dpkg -i download && \
     rm download
 

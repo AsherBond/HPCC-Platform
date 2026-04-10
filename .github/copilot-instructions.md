@@ -46,49 +46,11 @@ cmake --build <build-dir> --parallel --target package
 - **ESP**: Enterprise Services Platform for web services and APIs
 - **ECL**: Enterprise Control Language compiler and runtime
 
-### Code Style (Essential Rules)
-- Use Allman brace style, but allow single-line blocks to have no braces, unless nested.
-- Use camelCase for variable names
-- Use constexpr over macros
-- No trailing whitespace
-- Use `#pragma once` for header guards
-- Use `Owned<>` vs `Linked<>` for object ownership
-- Avoid default parameters (use method overloading instead)
-- Use `%u` for unsigned integers, `%d` for signed integers
-- Complete style guide: `devdoc/StyleGuide.md`
 
 ### Development Workflow
 - See `devdoc/Development.md` for testing and development guidelines
 - Use pull requests with code reviews
 - Target appropriate branch per `devdoc/VersionSupport.md`
-
-## Code Review Priorities
-
-### HPCC Platform Specific Considerations
-- **ECL Language Changes**: Verify syntax compatibility and backward compatibility with existing ECL code
-- **Distributed System Impact**: Consider interactions between Dali, Thor, and Roxie components
-- **Memory Management**: Check `Owned<>`/`Linked<>` usage and resource cleanup patterns
-- **Thread Safety**: Look for race conditions, proper locking, and synchronization issues across all components
-- **Performance Impact**: Consider effects on query execution and distributed data throughput
-- **Security**: Validate input sanitization, authentication, and authorization mechanisms
-- **API Compatibility**: Ensure changes don't break existing client interfaces
-
-### Critical Quality Checks
-1. **Memory Management**: Verify proper `Owned<>`/`Linked<>` usage and check for memory/resource leaks in general
-2. **Thread Safety**: Especially in server components - look for race conditions and proper locking
-3. **Error Handling**: Consistent error reporting and logging throughout the codebase
-4. **Test Coverage**: Appropriate unit tests and integration tests for the change scope
-5. **Documentation**: API documentation for public interfaces and significant behavior changes
-6. **Style Compliance**: Adherence to coding standards in `devdoc/StyleGuide.md`
-
-### Review Questions to Consider
-- Are there any efficiency concerns or performance bottlenecks?
-- Is the code thread-safe and properly synchronized?
-- Could the code be refactored to improve maintainability and reuse?
-- Are there any memory or resource leaks?
-- Does this change maintain backward compatibility?
-- Are error conditions properly handled and logged?
-- Is the change properly tested with appropriate test coverage?
 
 ## TypeScript/React Project
 

@@ -822,20 +822,8 @@ IFileIO *createMultipleWrite(CActivityBase *activity, IPartDescriptor &partDesc,
     {
         compMethod = COMPRESS_METHOD_LZ4;
         // rowdif used if recordSize > 0, else fallback to compMethod
-        IFEflags fileIOExtaFlags = IFEnone;
         if (!ecomp)
         {
-            if (twFlags & TW_Temporary)
-            {
-                // if temp file then can use newer compressor
-                StringBuffer compType;
-                activity->getOpt(THOROPT_COMPRESS_SPILL_TYPE, compType);
-                compMethod = getCompMethod(compType);
-            }
-            else if (twFlags & (TW_JobTemp|TW_Persist))
-            {
-                compMethod = COMPRESS_METHOD_ZSTD;
-            }
             // force
             StringBuffer compressionType;
             if (activity->getOpt(THOROPT_COMPRESS_FORMAT, compressionType))
@@ -848,9 +836,31 @@ IFileIO *createMultipleWrite(CActivityBase *activity, IPartDescriptor &partDesc,
                 compMethod = COMPRESS_METHOD_LZ4;
             else if (activity->getOptBool(THOROPT_COMP_FORCELZ4HC, false))
                 compMethod = COMPRESS_METHOD_LZ4HC;
-
+            else // if not configured by HINT, #options or global config settings
+            {
+                Owned<const IStoragePlane> storagePlane = getStoragePlaneByName(planeName, false);
+                CompressionMethod planeCompressionMethod = COMPRESS_METHOD_NONE;
+                if (storagePlane)
+                {
+                    const char *compression = storagePlane->queryCompression();
+                    if (!isEmptyString(compression))
+                        compMethod = planeCompressionMethod = getCompMethod(compression);
+                }
+                if (planeCompressionMethod == COMPRESS_METHOD_NONE)
+                {
+                    if (twFlags & TW_Temporary)
+                    {
+                        StringBuffer compType;
+                        activity->getOpt(THOROPT_COMPRESS_SPILL_TYPE, compType);
+                        compMethod = getCompMethod(compType); // NB: defaults to LZ4 if unset/blank
+                    }
+                    else if (twFlags & (TW_JobTemp|TW_Persist))
+                        compMethod = COMPRESS_METHOD_ZSTD;
+                }
+            }
         }
         size32_t compressBlockSize = 0; // i.e. default.
+        IFEflags fileIOExtaFlags = IFEnone;
         fileio.setown(createCompressedFileWriter(file, 0 != (twFlags & TW_Extend), true, ecomp, compMethod, compressBlockSize, blockedIoSize, fileIOExtaFlags));
         if (!fileio)
         {

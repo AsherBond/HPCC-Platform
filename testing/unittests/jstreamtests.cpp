@@ -1004,7 +1004,7 @@ public:
         offset_t offset = 0;
         std::vector<size32_t> matches;
         unsigned skipLen = 0;
-        const char * base = peekStringList(matches, in, skipLen);
+        const char * base = peekStringList(matches, in, skipLen, 1);
 
         unsigned delta = 0;
         for (size32_t next : matches)

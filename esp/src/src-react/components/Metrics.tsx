@@ -10,7 +10,7 @@ import { scopedLogger } from "@hpcc-js/util";
 import nlsHPCC from "src/nlsHPCC";
 import { WUTimelineNoFetch } from "src/Timings";
 import * as Utility from "src/Utility";
-import { useMetricsViews, useWUQueryMetrics, scopeFilterMetrics, scopeFilterLogicalGraph } from "../hooks/metrics";
+import { useMetricsViews, useWUQueryMetrics, scopeFilterMetrics, scopeFilterLogicalGraph, GLOBAL_FAKE_ID } from "../hooks/metrics";
 import { HolyGrail } from "../layouts/HolyGrail";
 import { AutosizeHpccJSComponent } from "../layouts/HpccJSAdapter";
 import { DockPanel, DockPanelItem, ResetableDockPanel } from "../layouts/DockPanel";
@@ -156,6 +156,7 @@ export const Metrics: React.FunctionComponent<MetricsProps> = ({
     const pushSelectedMetricsUrl = React.useCallback((parentUrl: string, lsName: string, selectedMetrics: IScope[]) => {
         if (!lsName && selectedMetrics.length) {
             switch (selectedMetrics[0].type) {
+                case "global":
                 case "workflow":
                 case "graph":
                 case "subgraph":
@@ -207,7 +208,7 @@ export const Metrics: React.FunctionComponent<MetricsProps> = ({
     React.useEffect(() => {
         if (!logicalGraph && view.showTimeline) {
             timeline
-                .scopes(metrics)
+                .scopes(metrics.filter(row => row.id !== GLOBAL_FAKE_ID))
                 .height(TIMELINE_FIXEDHEIGHT)
                 .lazyRender()
                 ;
@@ -471,7 +472,7 @@ export const Metrics: React.FunctionComponent<MetricsProps> = ({
                         <MetricsGraph
                             metrics={metrics}
                             metricGraphData={metricGraphData}
-                            selection={selection}
+                            selection={selection.filter(id => id !== GLOBAL_FAKE_ID)}
                             selectedMetricsSource={selectedMetricsSource}
                             status={status}
                             onLineageSelectionChange={onLineageSelectionChange}

@@ -34,12 +34,20 @@
 #define ANE_APPEND -1
 #define ANE_SET -2
 
-// PTree deserialization context class
-class jlib_decl PTreeDeserializeContext
+// Context object for property tree deserialization
+// To be used to avoid repeated allocations during deserialization
+class PTreeDeserializeContext
 {
 public:
-    // This class can be extended in the future to hold state during deserialization
-    // For now, it serves as a placeholder for the context parameter
+    std::vector<size32_t> matchOffsets;
+
+    PTreeDeserializeContext()
+    {
+        // Since most nodes have <= 15 attribute name/value pairs;
+        // reserve space up front to avoid reallocations.
+        static constexpr size32_t expectedMaximumAttributeOffsetCount = 15 * 2;
+        matchOffsets.reserve(expectedMaximumAttributeOffsetCount);
+    }
 };
 
 ///////////////////
@@ -658,7 +666,7 @@ public:
     void serializeAttributes(MemoryBuffer &tgt);
 
     void serializeCutOff(IBufferedSerialOutputStream &tgt, int cutoff=-1, int depth=0) const;
-    void deserializeSelf(IBufferedSerialInputStream &src);
+    void deserializeSelf(IBufferedSerialInputStream &src, PTreeDeserializeContext &ctx);
     void serializeAttributes(IBufferedSerialOutputStream &tgt) const;
 
     void cloneIntoSelf(const IPropertyTree &srcTree, bool sub);     // clone the name and contents of srcTree into "this" tree
@@ -858,7 +866,6 @@ public:
     }
 };
 
-
 class jlib_decl CAtomPTree : public PTree
 {
     AttrValue *newAttrArray(unsigned n);
@@ -866,6 +873,12 @@ class jlib_decl CAtomPTree : public PTree
     PtrStrUnion<HashKeyElement> name;
 protected:
     virtual bool removeAttribute(const char *k) override;
+    virtual IPropertyTree *create(IBufferedSerialInputStream &in, PTreeDeserializeContext &ctx) override
+    {
+        IPropertyTree *tree = new CAtomPTree();
+        tree->deserializeFromStream(in, ctx);
+        return tree;
+    }
 public:
     CAtomPTree(const char *name=nullptr, byte flags=ipt_none, IPTArrayValue *value=nullptr, ChildMap *children=nullptr);
     ~CAtomPTree();
@@ -884,12 +897,6 @@ public:
         tree->deserialize(mb);
         return tree;
     }
-    virtual IPropertyTree *create(IBufferedSerialInputStream &in, PTreeDeserializeContext &ctx) override
-    {
-        IPropertyTree *tree = new CAtomPTree();
-        tree->deserializeFromStream(in, ctx);
-        return tree;
-    }
 };
 
 
@@ -899,6 +906,12 @@ class jlib_decl LocalPTree : public PTree
 {
 protected:
     virtual bool removeAttribute(const char *k) override;
+    virtual IPropertyTree *create(IBufferedSerialInputStream &in, PTreeDeserializeContext &ctx) override
+    {
+        IPropertyTree *tree = new LocalPTree();
+        tree->deserializeFromStream(in, ctx);
+        return tree;
+    }
     AttrStrUnion name;
 public:
     LocalPTree(const char *name=nullptr, byte flags=ipt_none, IPTArrayValue *value=nullptr, ChildMap *children=nullptr);
@@ -923,12 +936,6 @@ public:
     {
         IPropertyTree *tree = new LocalPTree();
         tree->deserialize(mb);
-        return tree;
-    }
-    virtual IPropertyTree *create(IBufferedSerialInputStream &in, PTreeDeserializeContext &ctx) override
-    {
-        IPropertyTree *tree = new LocalPTree();
-        tree->deserializeFromStream(in, ctx);
         return tree;
     }
 

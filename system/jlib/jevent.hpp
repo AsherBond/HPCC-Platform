@@ -52,6 +52,7 @@ enum EventType : byte
     EventQueryStop,
     EventRecordingSource,         // information about the source of the recording
     EventIndexOpen,               // open an index ready for reading
+    MetaPlaneInformation,         // information about a plane
     EventMax
 };
 
@@ -94,6 +95,8 @@ enum EventAttr : byte
     EvAttrInstanceId,
     EvAttrProcessDescriptor,
     EvAttrOpenTime,
+    EvAttrPlane,
+    EvAttrIsStriped,
     EvAttrMax
 };
 
@@ -435,6 +438,7 @@ public:
     void recordDaliSubscribe(const char * xpath, __int64 id, stat_type elapsedNs);
 
     void recordFileInformation(unsigned fileid, const char * filename);
+    void recordPlaneInformation(const char * plane, const char * path, bool isStriped);
 
     void recordQueryStart(const char * queryName);
     void recordQueryStop();
