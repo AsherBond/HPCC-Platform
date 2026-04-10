@@ -1696,8 +1696,11 @@ static IDistributedSuperFile *lookupRemoteOrForeignSuper(ICodeContext *ctx, cons
 {
     CDfsLogicalFileName slfn;
     slfn.set(superfn);
-    if (ctx->querySuperFileTransaction()->active())
-        throw makeStringExceptionV(0, "%s: Cannot access %s superfile %s within a transaction", caller, slfn.isRemote() ? "remote" : "foreign", superfn);
+    // Foreign files route through the ordinary Dali path and support
+    // transactions naturally. Remote (~remote::) files are read-only
+    // from the transaction's perspective — the wsdfs lookup below reads current state
+    // without participating in the Dali locking protocol, which is safe for these
+    // read-only superfile enquiry operations.
     Owned<IDistributedFile> df = wsdfs::lookup(slfn, ctx->queryUserDescriptor(), AccessMode::readMeta, false, false, nullptr, defaultPrivilegedUser, INFINITE);
     if (!df)
         throw makeStringExceptionV(0, "%s: Could not locate superfile: %s", caller, slfn.get());
