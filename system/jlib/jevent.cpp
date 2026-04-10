@@ -113,6 +113,7 @@ struct EventInformation
 #define QUERYSTOP_ATTRS       COMMON_ATTRS
 #define RECORDINGSOURCE_ATTRS COMMON_ATTRS, EvAttrProcessDescriptor
 #define INDEXOPEN_ATTRS       COMMON_ATTRS, EvAttrFileId, EvAttrOpenTime
+#define PLANEINFORMATION_ATTRS COMMON_ATTRS, EvAttrPlane, EvAttrPath, EvAttrIsStriped
 
 static constexpr EventInformation eventInformation[] {
     DEFINE_EVENT(None, EventCtxMax, { EvAttrNone } ),
@@ -136,6 +137,7 @@ static constexpr EventInformation eventInformation[] {
     DEFINE_EVENT(QueryStop, EventCtxIndex, { QUERYSTOP_ATTRS } ),
     DEFINE_EVENT(RecordingSource, EventCtxOther, { RECORDINGSOURCE_ATTRS } ),
     DEFINE_EVENT(IndexOpen, EventCtxIndex, { INDEXOPEN_ATTRS } ),
+    DEFINE_META(PlaneInformation, EventCtxOther, { PLANEINFORMATION_ATTRS } ),
 };
 static_assert(_elements_in(eventInformation) == EventMax);
 
@@ -191,6 +193,8 @@ static constexpr EventAttrInformation attrInformation[] = {
     DEFINE_ATTR(InstanceId, u8),
     DEFINE_ATTR(ProcessDescriptor, string),
     DEFINE_ATTR(OpenTime, u8),
+    DEFINE_ATTR(Plane, string),
+    DEFINE_ATTR(IsStriped, bool),
 };
 
 static_assert(_elements_in(attrInformation) == EvAttrMax);
@@ -900,6 +904,25 @@ void EventRecorder::recordFileInformation(unsigned fileid, const char * filename
     writeEventFooter(pos, requiredSize, writeOffset);
 }
 
+void EventRecorder::recordPlaneInformation(const char * plane, const char * path, bool isStriped)
+{
+    //Meta data is logged whether or not recording is paused, check that logging is enabled.
+    if (!isStarted || isStopped)
+        return;
+
+    if (unlikely(outputToLog))
+        TRACEEVENT("{ \"name\": \"MetaPlaneInformation\", \"Plane\": \"%s\", \"Path\": \"%s\", \"IsStriped\": %s }", plane, path, boolToStr(isStriped));
+
+    size32_t requiredSize = sizeMessageHeaderFooter + getSizeOfAttrs(plane, path, isStriped);
+    offset_type writeOffset = reserveEvent(requiredSize);
+    offset_type pos = writeOffset;
+    writeEventHeader(MetaPlaneInformation, pos);
+    write(pos, EvAttrPlane, plane);
+    write(pos, EvAttrPath, path);
+    write(pos, EvAttrIsStriped, isStriped);
+    writeEventFooter(pos, requiredSize, writeOffset);
+}
+
 void EventRecorder::recordQueryStart(const char * queryName)
 {
     if (!isRecording())
@@ -1008,6 +1031,7 @@ void EventRecorder::recordEvent(CEvent& event)
     switch (event.queryType())
     {
     case MetaFileInformation:
+    case MetaPlaneInformation:
     case EventRecordingSource:
         if (!isStarted || isStopped)
             return;

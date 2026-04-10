@@ -234,7 +234,9 @@ public:
         compressed = compression || config->getPropBool("@compressLogicalFiles", defaultCompressed);
     }
 
-    virtual const char * queryPrefix() const override { return prefix.c_str(); }
+   virtual const char * queryName() const override { return name.c_str(); }
+
+   virtual const char * queryPrefix() const override { return prefix.c_str(); }
 
     virtual const char * queryMirrorPrefix() const override
     {
@@ -357,8 +359,6 @@ public:
             return defaultValue;
         return value;
     }
-
-    const char * queryName() const { return name.c_str(); }
 
     virtual const IPropertyTree * queryConfig() const { return config; }
 
@@ -890,6 +890,23 @@ static const IStoragePlane * getStoragePlane(const char * name, const std::vecto
     return LINK(result);
 }
 
+static void getStoragePlanes(StoragePlaneArray & planes, const std::vector<std::string> &categories)
+{
+    CriticalBlock b(storagePlaneMapCrit);
+    for (auto &e: storagePlaneMap)
+    {
+        const CStoragePlane * plane = e.second;
+        const char * category = plane->queryCategory();
+        auto r = std::find(categories.begin(), categories.end(), category);
+        if (r != categories.end())
+        {
+            plane->Link();
+            planes.append(*plane);
+        }
+    }
+}
+
+const std::vector<std::string> dataPlaneCategories = { "data", "lz", "remote" };
 const IStoragePlane * getDataStoragePlane(const char * name, bool required)
 {
     StringBuffer group;
@@ -897,14 +914,20 @@ const IStoragePlane * getDataStoragePlane(const char * name, bool required)
 
     // NB: need to include "remote" planes too, because std. file access will encounter
     // files on the "remote" planes, when they have been remapped to them via ~remote access
-    return getStoragePlane(group, { "data", "lz", "remote" }, required);
+    return getStoragePlane(group, dataPlaneCategories, required);
 }
 
+void getDataStoragePlanes(StoragePlaneArray &planes)
+{
+    return getStoragePlanes(planes, dataPlaneCategories);
+}
+
+const std::vector<std::string> remotePlaneCategories = { "remote" };
 const IStoragePlane * getRemoteStoragePlane(const char * name, bool required)
 {
     StringBuffer group;
     group.append(name).toLowerCase();
-    return getStoragePlane(group, { "remote" }, required);
+    return getStoragePlane(group, remotePlaneCategories, required);
 }
 
 IStoragePlane * createStoragePlane(IPropertyTree *meta)

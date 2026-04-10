@@ -58,6 +58,7 @@
 #include "ctfile.hpp"
 #include "jhinplace.hpp"
 #include "jhblockcompressed.hpp"
+#include "jplane.hpp"
 
 #include "jhtree.ipp"
 #include "keybuild.hpp"
@@ -1212,6 +1213,18 @@ StringBuffer &CKeyStore::getMetrics(StringBuffer &xml)
 void CKeyStore::recordEventIndexInformation()
 {
     EventRecorder & recorder = queryRecorder();
+
+    StoragePlaneArray planes;
+    getDataStoragePlanes(planes);
+    ForEachItemIn(i, planes)
+    {
+        const IStoragePlane & plane = planes.item(i);
+        const char *name = plane.queryName();
+        const char *prefix = plane.queryPrefix();
+        if (!isEmptyString(prefix))
+            recorder.recordPlaneInformation(name, prefix, plane.isStriped());
+    }
+
     synchronized block(mutex);
     Owned<CKeyIndexMRUCache::CMRUIterator> iter = keyIndexCache.getIterator();
     ForEach(*iter)
